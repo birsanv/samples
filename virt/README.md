@@ -14,7 +14,9 @@ How this works:
 
 - As soon as the `acm-virt-config` label is set on the ManagedCluster `cls` resource, the `acm-virt-backup` policy is placed on the `cls` managed cluster.
 
-The Policy looks for `kubevirt.io.VirtualMachine` on the cluster. It only goes to the next steps if such resources are found. All VirtualMachine are being backed up using one schedule, named acm-rho-virt-schedule. If you want to backup only a subset of the VM's , use the   `backup_label_name` property on the ConfigMap to specify what label should have the VM's to be backed up. For example, is you want to backup only VM's with the label 'backup-vm', add this to  the VM ( the value can be anything , as long as the VM has the backup-vm label it will be backed up).
+The Policy looks for `kubevirt.io.VirtualMachine` on the cluster having a `cluster.open-cluster-management.io/backup-vm` label. It only goes to the next steps if such resources are found.
+
+The cluster.open-cluster-management.io/backup-vm value represents the name of the cron job to be used by this vm. The list of valid cron jobs is defined by the user using the `schedule_hub_config_name` property on the `acm-virt-config` ConfigMap. This property points to a cronjob map, see [schedule-cron.yaml](schedule-cron.yaml) as an example. All VirtualMachine are being backed up using one schedule per cron job. The backup schedule name is acm-rho-virt-schedule-cron-job-name. 
 
   1. The Policy uses the `acm-virt-config13.yaml` ConfigMap to read the user configuration, such as OADP version to be installed, namespace name for the OADP version, backup storage location, velero secret, backup schedule cron job
   2. The Policy copies over on the managed cluster 
