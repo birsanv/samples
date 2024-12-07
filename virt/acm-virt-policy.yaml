@@ -223,7 +223,7 @@ spec:
               {{- range $scheduleObj := (lookup "velero.io/v1" "Schedule" "" ""  $schedule_label).items }}
 
                 {{- $scheduleObjLastBckTime := "" }}
-                {{ if $scheduleObj.status }}
+                {{ if and $scheduleObj.status (hasKey $scheduleObj.status "lastBackup") }}
                   {{- $scheduleObjLastBckTime = (index $scheduleObj.status "lastBackup") }}
                 {{- end }}
 
