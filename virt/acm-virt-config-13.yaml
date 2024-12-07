@@ -11,14 +11,17 @@ data:
   backupNS: acm-app-backup-131
   channel: stable-1.3
   scheduleTTL: 100h
-  scheduleCron: "20 */4 * * *"
+  # define the schedules to be used by the vm backup; schedule_hub_config_name is the name of the configmap defining all the 
+  # supported cron job definitions
+  # you should define a ConfigMap named schedule-cron and set values such as : daily_8am: 0 8 * * *
+  schedule_hub_config_name: "schedule-cron"
+  #
   schedulePaused: "false"
   credentials_hub_secret_name: "hub-secret"
   credentials_name: "cloud-credentials"
   dpa_name: dpa-cls
-  # use backup_label_name if you want to backup a subset of VMs - only VMs with the backup_label_name label will be backed up
-  # if backup_label_name is "" all VMs are backed up
-  backup_label_name: ""
+  # only VMs with the backup_label_name label will be backed up
+  backup_label_name: "cluster.open-cluster-management.io/backup-vm"
   dpa_spec: "{
   \"backupLocations\": [
     {

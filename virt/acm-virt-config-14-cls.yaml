@@ -1,14 +1,14 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: acm-virt-config-14
+  name: acm-virt-config-14-cls
 data:
 
   ###### Configuration for the acm-virt-policy policy ###
   ########################################################
 
   # backupNS is the ns where velero/oadp is installed on the cluster
-  backupNS: open-cluster-management-backup
+  backupNS: vm-backup-test
   channel: stable-1.4
   scheduleTTL: 24h
   # define the schedules to be used by the vm backup; schedule_hub_config_name is the name of the configmap defining all the 
@@ -60,11 +60,11 @@ data:
       \"podConfig\": {
         \"resourceAllocations\": {
           \"limits\": {
-            \"cpu\": \"2\",
-            \"memory\": \"1Gi\"
+            \"cpu\": \"1\",
+            \"memory\": \"256Mi\"
           },
           \"requests\": {
-            \"cpu\": \"500m\",
+            \"cpu\": \"200m\",
             \"memory\": \"256Mi\"
           }
         }
