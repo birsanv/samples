@@ -18,17 +18,25 @@ spec:
         apiVersion: policy.open-cluster-management.io/v1
         kind: ConfigurationPolicy
         metadata:
-          name: create-virt-restore
+          name: create-restore-config
         spec:
           object-templates-raw: |
             {{- /* ns is the namespace for the OADP deployment  */ -}}
             {{- $ns := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backupNS" hub}}" }}
+            {{- $hub_restore_name := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "restore_hub_config_name" hub}}" }}
+
+            {{- /* cls_configmap_name is name of the main config map, copied over to the cluster by the install policy  */ -}}
             {{- $cls_configmap_name := "acm-virt-config-cls" }}
-            {{- $acm_restore_config := "acm-restore-config-cls" }}
 
-            {{- $hub_restore_config_name :=  fromConfigMap $ns $cls_configmap_name "restore_hub_config_name"  }}
-            {{if not (eq "" $hub_restore_config_name) }}
-
+            {{ if not (eq "" $hub_restore_name) }}
+              - complianceType: mustonlyhave
+                objectDefinition:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: {{ $cls_configmap_name }}
+                    namespace: {{ $ns }}
+                    data: '{{hub copyConfigMapData "" (fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "restore_hub_config_name") hub}}'
             {{- end }}
 
           remediationAction: enforce
@@ -42,17 +50,15 @@ spec:
           object-templates-raw: |
             {{- /* ns is the namespace for the OADP deployment  */ -}}
             {{- $ns := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backupNS" hub}}" }}
-            {{- /* cls_configmap_name is name of the main config map, copied over to the cluster by the install policy  */ -}}
-            {{- $cls_configmap_name := "acm-virt-config-cls" }}
+            {{- $hub_restore_name := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "restore_hub_config_name" hub}}" }}
 
-            {{- $configMapCls := (lookup "v1" "ConfigMap" $ns $cls_configmap_name) }}
-            {{ if hasKey $configMapCls.data "restore_hub_config_name" }}
+            {{ if not (eq "" $hub_restore_name) }}
               - complianceType: musthave
                 objectDefinition:
                   apiVersion: v1
                   kind: ConfigMap
                   metadata:
-                    name: {{ index $configMapCls.data "restore_hub_config_name" }}
+                    name: "acm-virt-config-cls"
                     namespace: {{ $ns }}
             {{- end }}
           customMessage:
