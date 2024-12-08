@@ -9,5 +9,7 @@ data:
 
   # define the name of the velero restore
   restoreName: "acm-restore-1"
-  # define the list of VM UID to be restored
-  vmsUID: "[\"UID1\", \"UID2\"]" 
+  # define the list of VM UID to be restored; enter the UIDs separated by space
+  vmsUID: "uid1 uid2"
+  # backupName is the name of the backup to restore
+  backupName: acm-rho-virt-schedule-20241031214304

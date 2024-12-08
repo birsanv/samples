@@ -68,3 +68,74 @@ spec:
             {{- end }}
           remediationAction: inform
           severity: low 
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: create-velero-restore
+        spec:
+          object-templates-raw: |
+            {{- /* ns is the namespace for the OADP deployment  */ -}}
+            {{- $ns := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backupNS" hub}}" }}
+            {{- $hub_restore_name := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "restore_hub_config_name" hub}}" }}
+
+            {{- /* cls_restore_configmap_name is the name of the main restore config map, copied over to the cluster  */ -}}
+            {{- $cls_restore_configmap_name := "acm-virt-restore-cls" }}
+            {{- $cls_configmap_name := "acm-virt-config-cls" }}
+            
+            {{ if not (eq "" $hub_restore_name) }}
+
+              {{- $restoreName := fromConfigMap $ns $cls_restore_configmap_name "restoreName" }}
+              {{- $backupName := fromConfigMap $ns $cls_restore_configmap_name "backupName" }}
+              {{- $vmUIDs := fromConfigMap $ns $cls_restore_configmap_name "vmsUID" }}
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: velero.io/v1
+                kind: Restore
+                metadata:
+                  name: {{ $restoreName }}
+                  namespace: {{ $ns }}
+                spec:
+                  backupName: {{ $backupName }}
+                  restorePVs: true
+                  orLabelSelectors:
+                    - matchExpressions:
+                        - values:
+                          {{- range $vms_name := split " " $vmUIDs }}
+                            {{ if not (eq $vms_name "") }}
+                          - {{ $vms_name }}
+                            {{- end }}
+                          {{- end }}
+                          key: kubevirt.io/domain
+                          operator: In
+            {{- end }}
+          remediationAction: enforce
+          severity: high
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: check-velero-restore-status
+        spec:
+          object-templates-raw: |
+            {{- /* ns is the namespace for the OADP deployment  */ -}}
+            {{- $ns := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backupNS" hub}}" }}
+            {{- $hub_restore_name := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "restore_hub_config_name" hub}}" }}
+
+            {{- /* cls_restore_configmap_name is the name of the main restore config map, copied over to the cluster  */ -}}
+            {{- $cls_restore_configmap_name := "acm-virt-restore-cls" }}
+            
+            {{ if not (eq "" $hub_restore_name) }}
+
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: velero.io/v1
+                kind: Restore
+                metadata:
+                  name: {{ fromConfigMap $ns $cls_restore_configmap_name "restoreName" }}
+                  namespace: {{ $ns }}
+                status:
+                  phase: Completed
+            {{- end }}
+          remediationAction: inform
+          severity: high
