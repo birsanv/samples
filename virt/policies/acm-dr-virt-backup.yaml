@@ -137,7 +137,8 @@ spec:
                   {{ $vms_ns := " " }}
                   {{- /* vms_ns gives the list of all VM names  */ -}}
                   {{ $vms_names := " " }}
-
+                  {{- /* vms_uids gives the list of all VM UIDs  */ -}}
+                  {{ $vms_uids := " " }}
                   {{- $acm_virt_sch_name_cron := "" }}
 
                   {{- /* go through all vms with a backup label and process only the ones with the same cron job as the one in current iteration */ -}}
@@ -162,6 +163,10 @@ spec:
                         {{- /* add VM name if not already in the vms_names  */ -}}
                         {{- $vms_names = (cat $vms_names $vms.metadata.name " ") }}
                       {{- end }}
+                      {{ if not (contains $vms.metadata.uid $vms_uids) }}
+                        {{- /* add VM uid if not already in the vms_uids  */ -}}
+                        {{- $vms_uids = (cat ((cat $vms_uids $vms.metadata.uid "#" $vms.metadata.namespace "--" $vms.metadata.name) | replace " " "") " ") }}
+                      {{- end }}
                     {{- end }}
                   {{- end }}
 
@@ -180,6 +185,14 @@ spec:
                           {{- end }}
                           cluster.open-cluster-management.io/backup-cluster: {{ fromClusterClaim "id.openshift.io" }}
                           cluster.open-cluster-management.io/backup-schedule-type: kubevirt
+                          {{- range $vms_uid := split " " $vms_uids }}
+                            {{ if not (eq $vms_uid "") }}
+                              {{- $vms_data := splitn "#" 2 $vms_uid }}
+                              {{- $vm_uid := $vms_data._0 }}
+                              {{- $vm_identity := $vms_data._1 }}
+                          {{ $vm_uid }}: "{{ $vm_identity}}"
+                            {{- end }}
+                          {{- end }}
                       spec:
                         paused: {{ $paused_schedule }}
                         schedule: {{ $jobs }}
