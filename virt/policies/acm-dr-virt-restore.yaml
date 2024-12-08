@@ -23,19 +23,21 @@ spec:
           object-templates-raw: |
             {{- /* ns is the namespace for the OADP deployment  */ -}}
             {{- $ns := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backupNS" hub}}" }}
-            {{- $hub_restore_name := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "restore_hub_config_name" hub}}" }}
-
-            {{- /* cls_configmap_name is name of the main config map, copied over to the cluster by the install policy  */ -}}
             {{- $cls_configmap_name := "acm-virt-config-cls" }}
 
+            {{- $hub_restore_name := fromConfigMap $ns $cls_configmap_name "restore_hub_config_name" }}
+
+            {{- /* cls_restore_configmap_name is the name of the main restore config map, copied over to the cluster  */ -}}
+            {{- $cls_restore_configmap_name := "acm-virt-restore-cls" }}
+
             {{ if not (eq "" $hub_restore_name) }}
-              - complianceType: mustonlyhave
-                objectDefinition:
-                  apiVersion: v1
-                  kind: ConfigMap
-                  metadata:
-                    name: {{ $cls_configmap_name }}
-                    namespace: {{ $ns }}
+                - complianceType: mustonlyhave
+                  objectDefinition:
+                    apiVersion: v1
+                    kind: ConfigMap
+                    metadata:
+                      name: {{ $cls_restore_configmap_name }}
+                      namespace: {{ $ns }}
                     data: '{{hub copyConfigMapData "" (fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "restore_hub_config_name") hub}}'
             {{- end }}
 
@@ -52,29 +54,17 @@ spec:
             {{- $ns := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backupNS" hub}}" }}
             {{- $hub_restore_name := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "restore_hub_config_name" hub}}" }}
 
+            {{- /* cls_restore_configmap_name is the name of the main restore config map, copied over to the cluster  */ -}}
+            {{- $cls_restore_configmap_name := "acm-virt-restore-cls" }}
+
             {{ if not (eq "" $hub_restore_name) }}
               - complianceType: musthave
                 objectDefinition:
                   apiVersion: v1
                   kind: ConfigMap
                   metadata:
-                    name: "acm-virt-config-cls"
+                    name: {{ $cls_restore_configmap_name }}
                     namespace: {{ $ns }}
             {{- end }}
-          customMessage:
-            noncompliant: |-
-              The restore property restore_hub_config_name is defined by the acm-virt-config ConfigMap but there is no ConfigMap with that name.
-              Make sure you create the restore ConfigMap or, if this is not a restore operation, remove the restore_hub_config_name property.
           remediationAction: inform
           severity: low 
-    - objectDefinition:
-        apiVersion: policy.open-cluster-management.io/v1
-        kind: ConfigurationPolicy
-        metadata:
-          name: check-restore-status-completed
-        spec:
-          object-templates-raw: |
-            {{- /* check if this is a hub, acm installed  */ -}}
-            {{- $acm_crd_name := "multiclusterhubs.operator.open-cluster-management.io" }}
-          remediationAction: inform
-          severity: low  
