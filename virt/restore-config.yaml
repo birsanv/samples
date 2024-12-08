@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: restore-config
+data:
+
+  ###### Configuration for the acm-dr-virt-restore policy, defining the vms to be restored on this cluster ###
+  ########################################################
+
+  # define the name of the velero restore
+  restoreName: "acm-restore-1"
+  # define the list of VM UID to be restored
+  vmsUID: "[\"UID1\", \"UID2\"]" 

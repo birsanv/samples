@@ -8,10 +8,20 @@ spec:
     - acm-dr-virt-install
     - acm-dr-virt-backup
 ---
+apiVersion: policy.open-cluster-management.io/v1beta1
+kind: PolicySet
+metadata:
+  name: acm-dr-virt-restore-policyset
+spec:
+  description: backup virtual machines created on hub or managed clusters, using OADP
+  policies:
+    - acm-dr-virt-install
+    - acm-dr-virt-restore
+---
 apiVersion: cluster.open-cluster-management.io/v1beta1
 kind: Placement
 metadata:
-  name: acm-dr-virt-backup-placement
+  name: acm-dr-virt-placement
 spec:
   predicates:
     - requiredClusterSelector:
@@ -28,13 +38,16 @@ spec:
 apiVersion: policy.open-cluster-management.io/v1
 kind: PlacementBinding
 metadata:
-  name: acm-dr-virt-backup-placement-binding
+  name: acm-dr-virt-placement-binding
 placementRef:
-  name: acm-dr-virt-backup-placement
+  name: acm-dr-virt-placement
   apiGroup: cluster.open-cluster-management.io
   kind: Placement
 subjects:
   - name: acm-dr-virt-backup-policyset
+    apiGroup: policy.open-cluster-management.io
+    kind: PolicySet
+  - name: acm-dr-virt-restore-policyset
     apiGroup: policy.open-cluster-management.io
     kind: PolicySet
 ---

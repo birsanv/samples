@@ -4,7 +4,7 @@ metadata:
   name: schedule-cron
 data:
 
-  ###### Configuration for the acm-virt-policy policy, defining supported cron jobs for the backup schedule ###
+  ###### Configuration for the acm-dr-virt-backup policy, defining supported cron jobs for the backup schedule ###
   ########################################################
 
   # define the schedules to be used by the vm backup; for a vm to use the schedule_twice_a_day schedule, set this label on the vm 

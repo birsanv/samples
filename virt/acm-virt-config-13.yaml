@@ -4,24 +4,19 @@ metadata:
   name: acm-virt-config-13
 data:
 
-  ###### Configuration for the acm-virt-policy policy ###
+  ###### Configuration for the acm-dr-virt-install policy ###
   ########################################################
 
   # backupNS is the ns where velero/oadp is installed on the cluster
   backupNS: acm-app-backup-131
   channel: stable-1.3
-  scheduleTTL: 100h
-  # define the schedules to be used by the vm backup; schedule_hub_config_name is the name of the configmap defining all the 
-  # supported cron job definitions
-  # you should define a ConfigMap named schedule-cron and set values such as : daily_8am: 0 8 * * *
-  schedule_hub_config_name: "schedule-cron"
-  #
-  schedulePaused: "false"
+  # credentials_hub_secret_name is the name of the Secret resource used by the OADP DPA resource to connect to the storage location
+  # hub-secret must be a Secret available under the acm-virt-config namespace. It will be copied over to the backup cluster by the policy
   credentials_hub_secret_name: "hub-secret"
   credentials_name: "cloud-credentials"
-  dpa_name: dpa-cls
   # only VMs with the backup_label_name label will be backed up
   backup_label_name: "cluster.open-cluster-management.io/backup-vm"
+  dpa_name: dpa-cls
   dpa_spec: "{
   \"backupLocations\": [
     {
@@ -70,3 +65,22 @@ data:
     }
   },
 }"
+  ##### end configuration for the acm-dr-virt-install policy##
+
+  ###### Configuration for the acm-dr-virt-backup policy ###
+  ########################################################
+  scheduleTTL: 100h
+  # define the schedules to be used by the vm backup; schedule_hub_config_name is the name of the configmap defining all the 
+  # supported cron job definitions
+  # you should define a ConfigMap named schedule-cron and set values such as : daily_8am: 0 8 * * *
+  schedule_hub_config_name: "schedule-cron"
+  ##
+  schedulePaused: "false"
+  ##### end configuration for the acm-dr-virt-backup policy##
+
+  ###### Configuration for the acm-dr-virt-restore policy ###
+  ########################################################
+  ## restore_hub_config_name is the name of the ConfigMap defining the restore information
+  ## The user should create on the hub a ConfigMap with the name defined below
+  restore_hub_config_name: "restore-config"
+  ##### end configuration for the acm-dr-virt-restore policy##

@@ -225,7 +225,6 @@ spec:
 
             {{- /* VM CRD is installed */ -}}
             {{- end}}
-          pruneObjectBehavior: DeleteIfCreated
           remediationAction: enforce
           pruneObjectBehavior: DeleteIfCreated
           severity: high
