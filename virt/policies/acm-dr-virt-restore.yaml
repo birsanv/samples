@@ -157,6 +157,15 @@ spec:
                           {{- end }}
                           key: app
                           operator: In
+                    - matchExpressions:
+                        - values:
+                          {{- range $vms_name := split " " $vms_names }}
+                            {{ if not (eq $vms_name "") }}
+                          - {{ $vms_name }}
+                            {{- end }}
+                          {{- end }}
+                          key: kubevirt.io/domain
+                          operator: In
                     {{- end }}
             {{- end }}
           remediationAction: enforce
