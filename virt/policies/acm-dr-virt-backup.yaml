@@ -137,7 +137,8 @@ spec:
                   {{ $vms_ns := " " }}
                   {{- /* vms_ns gives the list of all VM names  */ -}}
                   {{ $vms_names := " " }}
-                  {{- /* vms_uids gives the list of all VM UIDs  */ -}}
+                  {{- /* vms_uids gives the list of all VM UIDs and the namespace--name for the vm  */ -}}
+                  {{- /* this will be used to find the UID of the vm; the information is added to the backupSchedule label is this format : uid: ns--name  */ -}}
                   {{ $vms_uids := " " }}
                   {{- $acm_virt_sch_name_cron := "" }}
 
