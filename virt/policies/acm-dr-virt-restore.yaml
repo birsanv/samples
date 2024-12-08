@@ -88,6 +88,37 @@ spec:
               {{- $restoreName := fromConfigMap $ns $cls_restore_configmap_name "restoreName" }}
               {{- $backupName := fromConfigMap $ns $cls_restore_configmap_name "backupName" }}
               {{- $vmUIDs := fromConfigMap $ns $cls_restore_configmap_name "vmsUID" }}
+
+              {{- /* vms_ns gives the list of all namespaces where VM exist  */ -}}
+              {{ $vms_ns := " " }}
+              {{- /* vms_ns gives the list of all VM names  */ -}}
+              {{ $vms_names := " " }}
+              {{- $backup_to_restore := lookup "velero.io/v1" "Backup" $ns $backupName }}
+                {{ if eq $backup_to_restore.metadata.name $backupName }}
+
+                {{- range $vms_uid := split " " $vmUIDs }}
+                  {{ if and (not (eq $vms_uid "")) (hasKey $backup_to_restore.metadata.labels $vms_uid) }}
+
+                    {{- $vm_identity := index $backup_to_restore.metadata.labels $vms_uid }}
+
+                    {{- $vm_list := splitn "--" 2 $vm_identity }}
+                    {{- $vm_namespace := $vm_list._0 }}
+                    {{- $vm_name := $vm_list._1 }}
+
+                    {{ if not (contains $vm_namespace $vms_ns) }}
+                      {{- /* add VM namespace if not already in the vms_ns  */ -}}
+                      {{- $vms_ns = (cat $vms_ns $vm_namespace " ") }}
+                    {{- end }}
+                    {{ if not (contains $vm_name $vms_names) }}
+                      {{- /* add VM name if not already in the vms_names  */ -}}
+                      {{- $vms_names = (cat $vms_names $vm_name " ") }}
+                    {{- end }}
+                  {{- end }}
+                {{- /* go over all UUIDs from the restore config map and find vm ns and name */ -}}
+                {{- end }}
+              {{- /* backupName exists */ -}}
+              {{- end }}
+
             - complianceType: musthave
               objectDefinition:
                 apiVersion: velero.io/v1
@@ -98,16 +129,35 @@ spec:
                 spec:
                   backupName: {{ $backupName }}
                   restorePVs: true
+                  {{ if not (eq $vms_ns "") }}
+                  includedNamespaces:
+                    {{- range $vms_namespace := split " " $vms_ns }}
+                    {{ if not (eq $vms_namespace "") }}
+                    - {{ $vms_namespace }}
+                    {{- end }}
+                    {{- end }}
+                  {{- end }}
                   orLabelSelectors:
                     - matchExpressions:
                         - values:
-                          {{- range $vms_name := split " " $vmUIDs }}
+                          {{- range $vms_uid := split " " $vmUIDs }}
+                            {{ if not (eq $vms_uid "") }}
+                          - {{ $vms_uid }}
+                            {{- end }}
+                          {{- end }}
+                          key: kubevirt.io/created-by
+                          operator: In
+                    {{ if not (eq $vms_ns "") }}
+                    - matchExpressions:
+                        - values:
+                          {{- range $vms_name := split " " $vms_names }}
                             {{ if not (eq $vms_name "") }}
                           - {{ $vms_name }}
                             {{- end }}
                           {{- end }}
-                          key: kubevirt.io/domain
+                          key: app
                           operator: In
+                    {{- end }}
             {{- end }}
           remediationAction: enforce
           severity: high
