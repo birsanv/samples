@@ -4,9 +4,9 @@ This policy can be used to backup and restore RHOV resources running on managed 
 The policy is installed on the hub and is placed on managed clusters ( or hub ) using a label annotation `acm-virt-config`:`value`, where is the name of a ConfigMap, available on the hub in the same namespace with this policy. This ConfigMap defines the backup configuration for the cluster, such as : OADP version, backup schedule cron job, backup storage location, backup storage credentials.
 An example of such configuration is available [here](./acm-virt-config.yaml) and [here](./acm-virt-config-13.yaml).
 
-The `acm-dr-virt-install` Policy installs OADP on the cluster tagged with the `acm-virt-config`:`value` label, creates the DPA and creates a backup schedule to backup all VM resources.
+The [`acm-dr-virt-install`](./policies/acm-dr-virt-install.yaml) Policy installs OADP on the cluster tagged with the `acm-virt-config`:`value` label, creates the DPA and creates a backup schedule to backup all VM resources.
 
-The `acm-dr-virt-backup` Policy backs up all vms with a `cluster.open-cluster-management.io/backup-vm`  label:
+The [`acm-dr-virt-backup`](./policies/acm-dr-virt-backup.yaml) Policy backs up all vms with a `cluster.open-cluster-management.io/backup-vm`  label:
 
 ```yaml
 apiVersion: kubevirt.io/v1
@@ -18,7 +18,7 @@ metadata:
     cluster.open-cluster-management.io/backup-vm: twice_a_day
 ```
 
-The The `acm-dr-virt-restore` Policy restore vms by UID.
+The The [`acm-dr-virt-restore`](./policies/acm-dr-virt-restore.yaml) Policy restore vms by UID.
 
 # Scenario
 
@@ -57,13 +57,13 @@ If you want to have 2 vms in separate backups, they have to use a different name
 
 ## acm-dr-virt-install Policy
 
- The `acm-dr-virt-install` Policy installs, if not already installed, OADP at specified version and creates the DPA resource using the `acm-virt-config13.yaml` ConfigMap `dpa_spec` property (updates DPA is already created). If the vm runs on the hub, so the Policy is placed on the hub, the `acm-dr-virt-install` Policy just checks if OADP is installed and DPA created.
+ The [`acm-dr-virt-install`](./policies/acm-dr-virt-install.yaml) Policy installs, if not already installed, OADP at specified version and creates the DPA resource using the `acm-virt-config13.yaml` ConfigMap `dpa_spec` property (updates DPA is already created). If the vm runs on the hub, so the Policy is placed on the hub, the `acm-dr-virt-install` Policy just checks if OADP is installed and DPA created.
 
  When uninstalled or disabled, it deletes all resources created directly by the Policy.
 
 ## acm-dr-virt-backup Policy
 
-The `acm-dr-virt-backup` Policy is used to backup one or more vms on the cluster where is placed. It depends on the `acm-dr-virt-install` Policy to setup and configure OADP and DPA and is not enabled until the `acm-dr-virt-install` Policy has no violations.
+The [`acm-dr-virt-backup`](./policies/acm-dr-virt-backup.yaml) Policy is used to backup one or more vms on the cluster where is placed. It depends on the `acm-dr-virt-install` Policy to setup and configure OADP and DPA and is not enabled until the `acm-dr-virt-install` Policy has no violations.
 
 - The Policy creates a velero `Schedule` using the `acm-virt-config13.yaml` ConfigMap settings. It finds all VM's resources running on the cluster with a `cluster.open-cluster-management.io/backup-vm: cron_job_name` label, where `cron_job_name` is the name of the cron schedule used to backup this vm. The `cron_job_name` should be a valid property, defined by the [schedule-cron.yaml](schedule-cron.yaml) ConfigMap.
 
@@ -180,7 +180,7 @@ spec:
 
 ## acm-dr-virt-restore Policy
 
-The `acm-dr-virt-restore` Policy restores one or more vms on the cluster where the policy is placed. It depends on the `acm-dr-virt-install` Policy to setup and configure OADP and DPA and is not enabled until the `acm-dr-virt-install` Policy has no violations.
+The [`acm-dr-virt-restore`](./policies/acm-dr-virt-restore.yaml) Policy restores one or more vms on the cluster where the policy is placed. It depends on the `acm-dr-virt-install` Policy to setup and configure OADP and DPA and is not enabled until the `acm-dr-virt-install` Policy has no violations.
 
 Use the `restore_hub_config_name` property to specify what vms to restore. 
 The value of the `restore_hub_config_name` property should be the name of the ConfigMap defining the restore information. This ConfigMap must be created by the user on the hub, under the Policy namespace. See [restore-config](./restore-config.yaml) ConfigMap as a sample.
