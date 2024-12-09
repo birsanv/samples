@@ -124,7 +124,7 @@ spec:
 
               {{ if $generateSchedule }}
 
-                {{- $schedule_label := "cluster.open-cluster-management.io/backup-vm" }}
+                {{- $schedule_label := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backup_label_name" hub}}" }}
                 {{- /* get all vms with a backup label  */ -}}
                 {{- $vms_to_backup := (lookup "kubevirt.io/v1" "VirtualMachine" "" "" $schedule_label) }}
 
