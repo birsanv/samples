@@ -51,8 +51,9 @@ spec:
                     apiVersion: velero.io/v1
                     kind: Schedule
                     metadata:
-                      name: {{ $acm_virt_sch_name }}
                       namespace: {{ $ns }}
+                      labels:
+                        cluster.open-cluster-management.io/backup-schedule-type: kubevirt
             {{ else }}
 
               {{- $cron_schedule := "10 */1 * * *" }}
@@ -107,8 +108,9 @@ spec:
                     apiVersion: velero.io/v1
                     kind: Schedule
                     metadata:
-                      name: {{ $acm_virt_sch_name }}
                       namespace: {{ $ns }}
+                      labels:
+                        cluster.open-cluster-management.io/backup-schedule-type: kubevirt
                 {{ else }}
                    {{ if $is_hub }}
                     {{- /* get acm schedule settings */ -}}
