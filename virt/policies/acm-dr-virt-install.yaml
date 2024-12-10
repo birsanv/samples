@@ -140,8 +140,10 @@ spec:
                   {{- $cls_configmap_name := "acm-virt-config-cls" }}
 
                   {{- $oadp_channel = "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "channel" hub}}" }}
-                  {{- $ns = "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backupNS" hub}}" }}
                   {{- $credentialsName := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "credentials_name" hub}}" }}
+                  {{ if not $is_hub }}
+                    {{- $ns = "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backupNS" hub}}" }}
+                  {{- end }}
 
                 - complianceType: musthave
                   objectDefinition:
