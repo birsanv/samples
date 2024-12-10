@@ -34,7 +34,7 @@ How this works:
 - The user wants to enable virt backup on a managed cluster `cls1`:
   1. User creates a velero secret on the hub `hub-secret`, in the namespace where the policy is installed
   2. User creates a ConfigMap on the hub, in the namespace where the policy is installed - let's say [acm-virt-config13.yaml](./acm-virt-config-13.yaml) : the cluster is an OCP 4.12 so it has to install OADP 1.3; 
-  3. The user applies on ManagedCluster `cls` this label : `acm-virt-config=acm-virt-config13` . This will result in the Policies being placed on this cluster. 
+  3. The user applies on ManagedCluster `cls` this label : `acm-virt-config=acm-virt-config-13` . This will result in the Policies being placed on this cluster. 
 
 - As soon as the `acm-virt-config` label is set on the ManagedCluster `cls` resource, the `acm-virt-backup` policy is placed on the `cls` managed cluster.
 
