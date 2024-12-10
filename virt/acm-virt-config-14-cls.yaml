@@ -78,3 +78,11 @@ data:
   schedulePaused: "false"
   ##### end configuration for the acm-dr-virt-backup policy##
 
+
+  ###### Configuration for the acm-dr-virt-restore policy ###
+  ########################################################
+  ## restore_hub_config_name is the name of the ConfigMap defining the restore information
+  ## The user should create on the hub a ConfigMap with the name defined below
+  ## if this is not a restore operation, set the restoreName in the configName to emmpty 
+  restore_hub_config_name: "restore-config"
+  ##### end configuration for the acm-dr-virt-restore policy##

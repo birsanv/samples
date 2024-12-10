@@ -8,6 +8,7 @@ data:
   ########################################################
 
   # define the name of the velero restore
+  # set this to "" if this is not a restore operation
   restoreName: "acm-restore-twice-a-day-20241208155210"
   # define the list of VM UID to be restored; enter the UIDs separated by space
   vmsUID: "b0ed31e9-ee17-4a59-9aa5-76b15a10ee42 uid2"

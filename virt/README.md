@@ -187,6 +187,8 @@ spec:
 
 The [`acm-dr-virt-restore`](./policies/acm-dr-virt-restore.yaml) Policy restores one or more vms on the cluster where the policy is placed. It depends on the `acm-dr-virt-install` Policy to setup and configure OADP and DPA and is not enabled until the `acm-dr-virt-install` Policy has no violations.
 
+Set `restoreName` in the restore-config.yaml to flag this as a no op for restore ( the policy doesn't try to restore anything ).
+
 Use the `restore_hub_config_name` property to specify what vms to restore. 
 The value of the `restore_hub_config_name` property should be the name of the ConfigMap defining the restore information. This ConfigMap must be created by the user on the hub, under the Policy namespace. See [restore-config](./restore-config.yaml) ConfigMap as a sample.
 

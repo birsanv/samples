@@ -8,7 +8,7 @@ data:
   ########################################################
 
   # backupNS is the ns where velero/oadp is installed on the cluster
-  backupNS: open-cluster-management-backup
+  backupNS: open-cluster-management-backup-1
   channel: stable-1.4
   # credentials_hub_secret_name is the name of the Secret resource used by the OADP DPA resource to connect to the storage location
   # hub-secret must be a Secret available under the acm-virt-config namespace. It will be copied over to the backup cluster by the policy
@@ -80,7 +80,8 @@ data:
 
   ###### Configuration for the acm-dr-virt-restore policy ###
   ########################################################
-  ## OPTIONAL restore_hub_config_name is the name of the ConfigMap defining the restore information
+  ## restore_hub_config_name is the name of the ConfigMap defining the restore information
   ## The user should create on the hub a ConfigMap with the name defined below
+  ## if this is not a restore operation, set the restoreName in the configName to emmpty 
   restore_hub_config_name: "restore-config"
   ##### end configuration for the acm-dr-virt-restore policy##
