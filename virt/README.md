@@ -4,6 +4,8 @@ This policy can be used to backup and restore RHOV resources running on managed 
 The policy is installed on the hub and is placed on managed clusters ( or hub ) using a label annotation `acm-virt-config`:`value`, where `value` is the name of a ConfigMap, available on the hub in the same namespace with this policy. This ConfigMap defines the backup configuration for the cluster, such as : OADP version, backup schedule cron job, backup storage location, backup storage credentials.
 An example of such configuration is available [here](./acm-virt-config-14.yaml) and [here](./acm-virt-config-13.yaml).
 
+Run `oc apply -k virt ` to install all policies.
+
 The [`acm-dr-virt-install`](./policies/acm-dr-virt-install.yaml) Policy installs OADP on the cluster tagged with the `acm-virt-config`:`value` label, creates the DPA and and the velero secret.
 
 The [`acm-dr-virt-backup`](./policies/acm-dr-virt-backup.yaml) Policy backs up all vms with a `cluster.open-cluster-management.io/backup-vm`  label:
