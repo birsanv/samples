@@ -2,4 +2,4 @@ resources:
 - policies/acm-dr-virt-install.yaml
 - policies/acm-dr-virt-backup.yaml
 - policies/acm-dr-virt-restore.yaml
-- policy-sets/acm-dr-virt-backup-policyset.yaml
+- policy-sets/acm-dr-vir-policysets.yaml
