@@ -300,3 +300,55 @@ spec:
 
           remediationAction: inform
           severity: low  
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: check-cron-schedule-valid
+        spec:
+          object-templates-raw: |
+            {{- /* check if VM CRD is not installed  */ -}}
+            {{- $vm_crd_name := "virtualmachines.kubevirt.io" }}
+            {{- $vm_crd := lookup "apiextensions.k8s.io/v1" "CustomResourceDefinition" "" $vm_crd_name }}
+            {{- $vm_crd_exists := eq $vm_crd.metadata.name  $vm_crd_name }}
+
+            {{ if $vm_crd_exists }}
+
+              {{- /* ns is the namespace for the OADP deployment  */ -}}
+              {{- $ns := "open-cluster-management-backup" }}
+
+              {{- /* check if this is a hub, acm installed  */ -}}
+              {{- $acm_crd_name := "multiclusterhubs.operator.open-cluster-management.io" }}
+              {{- $acm_crd := lookup "apiextensions.k8s.io/v1" "CustomResourceDefinition" "" $acm_crd_name  }}
+              {{- $is_hub := eq $acm_crd.metadata.name  $acm_crd_name }}
+              {{ if not $is_hub }}
+                {{- $ns = "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backupNS" hub}}" }}
+              {{- end }}
+
+              {{- $jobs_map := ( lookup "v1" "ConfigMap" $ns "acm-virt-cron-schedules" ).data }}
+              {{- $cron_label := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backup_label_name" hub}}" }}
+
+              {{- /* get all vms with a backup label and check that the specified cron job name is valid  */ -}}
+              {{- range $vms_to_backup := (lookup "kubevirt.io/v1" "VirtualMachine" "" "" $cron_label).items }}
+
+                {{- $vm_cron_value := (index $vms_to_backup.metadata.labels $cron_label) }}
+                {{if not (hasKey $jobs_map $vm_cron_value) }}
+                - complianceType: musthave
+                  objectDefinition:
+                    apiVersion: v1
+                    kind: ConfigMap
+                    metadata:
+                      name: "acm-virt-cron-schedules"
+                      namespace: {{ $ns }}
+                    data:
+                      {{ $vm_cron_value }}: "some value"
+                {{- end }}
+              {{- end }}
+            {{- end }}
+          remediationAction: inform
+          severity: low
+          customMessage:
+            compliant: "All schedule names used by VirtualMachines label to require backup are valid."
+            noncompliant: |-
+              Some schedule names used by the VirtualMachines to require backup are not valid.
+              Verify that all schedule names used by the VirtualMachines are defined by the policy schedule ConfigMap.
