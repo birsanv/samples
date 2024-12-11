@@ -123,6 +123,7 @@ spec:
 
             {{- /* run this ifVM CRD is installed and this is a managed cluster, NOT hub */ -}}
             {{ if $vm_crd_exists }}
+               {{ if $is_hub }}
 
                 {{- $cls_configmap_name := "acm-virt-config-cls" }}
                 - complianceType: mustonlyhave
@@ -133,7 +134,7 @@ spec:
                       name: {{ $cls_configmap_name }}
                       namespace: {{ $ns }}
                     data: '{{hub copyConfigMapData "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) hub}}'
-
+                {{- end }}
               {{- /* check if there are VM instances  */ -}}
               {{ if gt (len ((lookup "kubevirt.io/v1" "VirtualMachine" "" "" "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backup_label_name" hub}}").items)) 0  }}
 
