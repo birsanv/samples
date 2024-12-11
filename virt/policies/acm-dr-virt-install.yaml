@@ -6,6 +6,8 @@ metadata:
     policy.open-cluster-management.io/categories: CA Security Assessment and Authorization
     policy.open-cluster-management.io/controls: CA-2 Security Assessments, CA-7 Continuous Monitoring
     policy.open-cluster-management.io/standards: NIST SP 800-53
+    policy.open-cluster-management.io/description: |
+      Installs OADP and configures DataProtectionApplication on the managed cluster.
 spec:
   disabled: false
   policy-templates:
@@ -16,18 +18,6 @@ spec:
           name: check-dpa-config
         spec:
           object-templates-raw: |
-            {{- /* check if VM CRD is not installed  */ -}}
-            {{- $vm_crd_name := "virtualmachines.kubevirt.io" }}
-            {{- $vm_crd := lookup "apiextensions.k8s.io/v1" "CustomResourceDefinition" "" $vm_crd_name }}
-            {{- $vm_crd_exists := eq $vm_crd.metadata.name  $vm_crd_name }}
-
-            {{- /* skip if VM CRD is not installed  */ -}}
-            {{ if $vm_crd_exists }}
-
-              {{- /* check if there are VM instances  */ -}}
-              {{- $vms := (lookup "kubevirt.io/v1" "VirtualMachine" "" "" "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backup_label_name" hub}}").items }}
-              {{ if gt (len ($vms)) 0  }}
-
                 {{- /* check if OADP CRD is installed  */ -}}
                 {{- $dpa_crd_name := "dataprotectionapplications.oadp.openshift.io" }}
                 {{- $dpa_crd := lookup "apiextensions.k8s.io/v1" "CustomResourceDefinition" "" $dpa_crd_name  }}
@@ -82,8 +72,6 @@ spec:
                     status:
                       phase: Available
                     {{- end}}
-                  {{- end }}
-                {{- end }}
           remediationAction: inform
           severity: high
 
@@ -99,100 +87,99 @@ spec:
             {{- $acm_crd := lookup "apiextensions.k8s.io/v1" "CustomResourceDefinition" "" $acm_crd_name  }}
             {{- $is_hub := eq $acm_crd.metadata.name  $acm_crd_name }}
 
-            {{- /* for managed clusters and hub, copy user created cron schedule yaml to the OADP namespace and name it acm-virt-cron-schedules  */ -}}
-            {{- /* for managed clusters and hub, copy user created acm-virt-config yaml to the OADP namespace and name it acm-virt-config-cls  */ -}}
-            {{- /* this simplifies config search on managed clusters, since it removes the need to access it from the hub  */ -}}
+                  {{- /* for managed clusters and hub, copy user created cron schedule yaml to the OADP namespace and name it acm-virt-cron-schedules  */ -}}
+                  {{- /* for managed clusters and hub, copy user created acm-virt-config yaml to the OADP namespace and name it acm-virt-config-cls  */ -}}
+                  {{- /* this simplifies config search on managed clusters, since it removes the need to access it from the hub  */ -}}
 
-            {{- $cron_schedule_configmap_name := "acm-virt-cron-schedules" }}
+                  {{- $cron_schedule_configmap_name := "acm-virt-cron-schedules" }}
 
-            {{- $oadp_channel := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "channel" hub}}" }}
-            {{- $credentialsName := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "credentials_name" hub}}" }}
-            
-            {{- /* ns is the namespace for the OADP deployment  */ -}}
-            {{- $ns := "open-cluster-management-backup" }}
-            {{ if not $is_hub }}
-              {{- $ns = "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backupNS" hub}}" }}
-            {{- end }}
+                  {{- $oadp_channel := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "channel" hub}}" }}
+                  {{- $credentialsName := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "credentials_name" hub}}" }}
+                  {{- /* ns is the namespace for the OADP deployment  */ -}}
+                  {{- $ns := "open-cluster-management-backup" }}
+                  {{ if not $is_hub }}
+                    {{- $ns = "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backupNS" hub}}" }}
+                  {{- end }}
 
-          - complianceType: musthave
-            objectDefinition:
-              apiVersion: v1
-              kind: Namespace
-              metadata:
-                name: {{ $ns }}
+                - complianceType: musthave
+                  objectDefinition:
+                    apiVersion: v1
+                    kind: Namespace
+                    metadata:
+                      name: {{ $ns }}
 
-          - complianceType: mustonlyhave
-            objectDefinition:
-              apiVersion: v1
-              kind: ConfigMap
-              metadata:
-                labels:
-                  not-is-hub: "{{not $is_hub}}"
-                  ns: {{ $ns }}
-                name: "acm-virt-config-cls"
-                namespace: {{ $ns }}
-              data: '{{hub copyConfigMapData "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) hub}}'
+                - complianceType: mustonlyhave
+                  objectDefinition:
+                    apiVersion: v1
+                    kind: ConfigMap
+                    metadata:
+                      labels:
+                        not-is-hub: "{{not $is_hub}}"
+                        ns: {{ $ns }}
+                      name: "acm-virt-config-cls"
+                      namespace: {{ $ns }}
+                    data: '{{hub copyConfigMapData "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) hub}}'
 
-          - complianceType: mustonlyhave
-            objectDefinition:
-              apiVersion: v1
-              kind: ConfigMap
-              metadata:
-                name: {{ $cron_schedule_configmap_name }}
-                namespace: {{ $ns }}
-              data: '{{hub copyConfigMapData "" (fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "schedule_hub_config_name") hub}}'
+                - complianceType: mustonlyhave
+                  objectDefinition:
+                    apiVersion: v1
+                    kind: ConfigMap
+                    metadata:
+                      name: {{ $cron_schedule_configmap_name }}
+                      namespace: {{ $ns }}
+                    data: '{{hub copyConfigMapData "" (fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "schedule_hub_config_name") hub}}'
 
-      {{- /* for managed clusters only, copy the oadp secret and install OADP  */ -}}
-      {{ if (not $is_hub) }}
-          - complianceType: mustonlyhave
-            objectDefinition:
-              apiVersion: v1
-              kind: Secret
-              metadata:
-                name: {{ $credentialsName }}
-                namespace: {{ $ns }}
-              data: '{{hub copySecretData "" (fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "credentials_hub_secret_name") hub}}'
+            {{- /* for managed clusters only, copy the oadp secret and install OADP  */ -}}
+            {{ if (not $is_hub) }}
+                - complianceType: mustonlyhave
+                  objectDefinition:
+                    apiVersion: v1
+                    kind: Secret
+                    metadata:
+                      name: {{ $credentialsName }}
+                      namespace: {{ $ns }}
+                    data: '{{hub copySecretData "" (fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "credentials_hub_secret_name") hub}}'
 
-          - complianceType: musthave
-            objectDefinition:
-              apiVersion: operators.coreos.com/v1
-              kind: OperatorGroup
-              metadata:
-                name: redhat-oadp-operator-group
-                namespace: {{ $ns }}
-              spec:
-                targetNamespaces:
-                - {{ $ns }}
+                - complianceType: musthave
+                  objectDefinition:
+                    apiVersion: operators.coreos.com/v1
+                    kind: OperatorGroup
+                    metadata:
+                      name: redhat-oadp-operator-group
+                      namespace: {{ $ns }}
+                    spec:
+                      targetNamespaces:
+                      - {{ $ns }}
 
-          - complianceType: musthave
-            objectDefinition:
-              apiVersion: operators.coreos.com/v1alpha1
-              kind: Subscription
-              metadata:
-                name: redhat-oadp-operator-subscription
-                namespace: {{ $ns }}
-              spec:
-                channel: {{ $oadp_channel }}
-                installPlanApproval: "Automatic"
-                name: "redhat-oadp-operator"
-                source: "redhat-operators"
-                sourceNamespace: "openshift-marketplace"
+                - complianceType: musthave
+                  objectDefinition:
+                    apiVersion: operators.coreos.com/v1alpha1
+                    kind: Subscription
+                    metadata:
+                      name: redhat-oadp-operator-subscription
+                      namespace: {{ $ns }}
+                    spec:
+                      channel: {{ $oadp_channel }}
+                      installPlanApproval: "Automatic"
+                      name: "redhat-oadp-operator"
+                      source: "redhat-operators"
+                      sourceNamespace: "openshift-marketplace"
 
-          {{- /* check if OADP CRD is installed  */ -}}
-          {{- $dpa_crd_name := "dataprotectionapplications.oadp.openshift.io" }}
-          {{- $dpa_crd := lookup "apiextensions.k8s.io/v1" "CustomResourceDefinition" "" "dataprotectionapplications.oadp.openshift.io"  }}
-          {{- $dpa_crd_exists := eq $dpa_crd.metadata.name  $dpa_crd_name }}
-            {{- if $dpa_crd_exists }}
-          - complianceType: mustonlyhave
-            objectDefinition:
-              apiVersion: oadp.openshift.io/v1alpha1
-              kind: DataProtectionApplication
-              metadata:
-                name: {{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "dpa_name" hub}}
-                namespace: {{ $ns }}
-              spec: '{{hub (fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "dpa_spec") | toLiteral hub}}'
-            {{- end }}
-          {{- end }}
+                {{- /* check if OADP CRD is installed  */ -}}
+                {{- $dpa_crd_name := "dataprotectionapplications.oadp.openshift.io" }}
+                {{- $dpa_crd := lookup "apiextensions.k8s.io/v1" "CustomResourceDefinition" "" "dataprotectionapplications.oadp.openshift.io"  }}
+                {{- $dpa_crd_exists := eq $dpa_crd.metadata.name  $dpa_crd_name }}
+                  {{- if $dpa_crd_exists }}
+                - complianceType: mustonlyhave
+                  objectDefinition:
+                    apiVersion: oadp.openshift.io/v1alpha1
+                    kind: DataProtectionApplication
+                    metadata:
+                      name: {{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "dpa_name" hub}}
+                      namespace: {{ $ns }}
+                    spec: '{{hub (fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "dpa_spec") | toLiteral hub}}'
+                  {{- end }}
+                {{- end }}
           remediationAction: enforce
           pruneObjectBehavior: DeleteIfCreated
-          severity: high 
+          severity: high
