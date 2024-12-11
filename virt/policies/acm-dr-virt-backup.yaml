@@ -153,6 +153,7 @@ spec:
                           labels:
                             cluster.open-cluster-management.io/backup-cluster: {{ fromClusterClaim "id.openshift.io" }}
                             cluster.open-cluster-management.io/backup-schedule-type: kubevirt
+                          annotations:
                             {{- range $vms_uid := split " " $vms_uids }}
                               {{ if not (eq $vms_uid "") }}
                                 {{- $vms_data := splitn "#" 2 $vms_uid }}

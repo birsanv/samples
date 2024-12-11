@@ -95,9 +95,9 @@ spec:
                 {{ if eq $backup_to_restore.metadata.name $backupName }}
 
                 {{- range $vms_uid := split " " $vmUIDs }}
-                  {{ if and (not (eq $vms_uid "")) (hasKey $backup_to_restore.metadata.labels $vms_uid) }}
+                  {{ if and (not (eq $vms_uid "")) (hasKey $backup_to_restore.metadata.annotations $vms_uid) }}
 
-                    {{- $vm_identity := index $backup_to_restore.metadata.labels $vms_uid }}
+                    {{- $vm_identity := index $backup_to_restore.metadata.annotations $vms_uid }}
 
                     {{- $vm_list := splitn "--" 2 $vm_identity }}
                     {{- $vm_namespace := $vm_list._0 }}

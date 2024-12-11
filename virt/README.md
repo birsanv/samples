@@ -96,6 +96,7 @@ kind: VirtualMachine
 metadata:
   name: vm1
   namespace: vm1-ns
+  uid: vm1uid
   labels:
     cluster.open-cluster-management.io/backup-vm: twice_a_day
 ```
@@ -106,6 +107,7 @@ kind: VirtualMachine
 metadata:
   name: vm2
   namespace: default
+  uid: vm2uid
   labels:
     cluster.open-cluster-management.io/backup-vm: twice_a_day
 ```
@@ -116,6 +118,7 @@ kind: VirtualMachine
 metadata:
   name: vm3
   namespace: default
+  uid: vm3uid
   labels:
     cluster.open-cluster-management.io/backup-vm: daily_8am
 ```
@@ -126,6 +129,12 @@ kind: Schedule
 metadata:
   name: acm-rho-virt-schedule-twice-a-day
   namespace: oadp-ns
+  annotations:
+   vm1uid: default--vm1
+   vm2uid: default--vm2
+  labels:
+    cluster.open-cluster-management.io/backup-cluster: thisclusterid
+    cluster.open-cluster-management.io/backup-schedule-type: kubevirt  
 spec:
   paused: false
   schedule: 0 */12 * * *
@@ -159,6 +168,11 @@ kind: Schedule
 metadata:
   name: acm-rho-virt-schedule-daily-8am
   namespace: oadp-ns
+  annotations:
+   vm3uid: default--vm3
+  labels:
+    cluster.open-cluster-management.io/backup-cluster: thisclusterid
+    cluster.open-cluster-management.io/backup-schedule-type: kubevirt  
 spec:
   paused: false
   schedule: 0 8 * * *
@@ -195,13 +209,13 @@ The value of the `restore_hub_config_name` property should be the name of the Co
 In this ConfigMap you define the name of the velero restore (`restoreName` property, for example `restoreName: "acm-restore-twice-a-day-20241208155210"`), the name of the backup to restore (`backupName` property, for example backupName: `acm-rho-virt-schedule-twice-a-day-20241208155210`) and the list of vms UIDs, space separated, that you want to restore ( `vmsUID` property, for example `vmsUID: "b0ed31e9-ee17-4a59-9aa5-76b15a10ee42 uid2"`).
 
 
-To get the UID of the VM you want to restore, open up the velero Backup wnd look for the labels section. Each VM that has been backed up by this velero Backup should have a label annotation in this format : `UID: vmns--vmname`. So if you know the name and ns of the VM you want to restore, you find the vm UID by looking for the label with this value `vmns--vmname`. See an example below:
+To get the UID of the VM you want to restore, open up the velero Backup and look for the annotations section. Each VM that has been backed up by this velero Backup should have an annotation in this format : `UID: vmns--vmname`. So if you know the name and ns of the VM you want to restore, you find the vm UID by looking for the annotation with this value `vmns--vmname`. See an example below:
 
 ```yaml
 apiVersion: velero.io/v1
 kind: Backup
 metadata:
   name: acm-rho-virt-schedule-daily-8am-20241209080052
-  labels:
+  annotations:
     457622ca-ab0a-474e-a6a9-cb7caf4a0a8b: mysql-persistent--fedora-todolist
 ```
