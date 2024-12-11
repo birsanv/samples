@@ -229,61 +229,65 @@ spec:
               {{- /* if schedule exists, get the last generated backup and verify the status is Completed  */ -}}
               {{- range $scheduleObj := (lookup "velero.io/v1" "Schedule" "" ""  $schedule_label).items }}
 
-                {{- $scheduleObjLastBckTime := "" }}
-                {{ if and $scheduleObj.status (hasKey $scheduleObj.status "lastBackup") }}
-                  {{- $scheduleObjLastBckTime = (index $scheduleObj.status "lastBackup") }}
-                {{- end }}
+                {{- $is_paused := and (hasKey $scheduleObj.spec "paused") $scheduleObj.spec.paused }}
 
-                {{ if (eq $scheduleObjLastBckTime "") }}
+                {{if not $is_paused }}
+                  {{- $scheduleObjLastBckTime := "" }}
+                  {{ if and $scheduleObj.status (hasKey $scheduleObj.status "lastBackup") }}
+                    {{- $scheduleObjLastBckTime = (index $scheduleObj.status "lastBackup") }}
+                  {{- end }}
 
-              - complianceType: musthave
-                objectDefinition:
-                  apiVersion: velero.io/v1
-                  kind: Schedule
-                  metadata:
-                    namespace: {{ $scheduleObj.metadata.namespace }}
-                    name: {{ $scheduleObj.metadata.name }}
-                    labels:
-                      cluster.open-cluster-management.io/backup-schedule-type: kubevirt 
-                  status:
-                    phase: Enabled
-                    lastBackup: "some value"
+                  {{ if (eq $scheduleObjLastBckTime "") }}
 
-                {{ else }}
-                  {{- range $backupList := (lookup "velero.io/v1" "Backup" "" "" $schedule_label).items }}
-                    {{- $backupCreation := $backupList.metadata.creationTimestamp  }}
-                    {{ if eq $backupCreation $scheduleObjLastBckTime }}
+                - complianceType: musthave
+                  objectDefinition:
+                    apiVersion: velero.io/v1
+                    kind: Schedule
+                    metadata:
+                      namespace: {{ $scheduleObj.metadata.namespace }}
+                      name: {{ $scheduleObj.metadata.name }}
+                      labels:
+                        cluster.open-cluster-management.io/backup-schedule-type: kubevirt 
+                    status:
+                      phase: Enabled
+                      lastBackup: "some value"
 
-                      {{- $data_upload_label := "velero.io/backup-name, velero.io/backup-name in (aa)" }}
-                      {{- $data_upload_label = replace "aa" $backupList.metadata.name $data_upload_label }}
+                  {{ else }}
+                    {{- range $backupList := (lookup "velero.io/v1" "Backup" "" "" $schedule_label).items }}
+                      {{- $backupCreation := $backupList.metadata.creationTimestamp  }}
+                      {{ if eq $backupCreation $scheduleObjLastBckTime }}
 
-                      {{- range $dataupload_obj :=  (lookup "velero.io/v2alpha1" "DataUpload" "$backupList.metadata.namespace" "" $data_upload_label ).items }}
-              - complianceType: musthave
-                objectDefinition:
-                  apiVersion: velero.io/v2alpha1
-                  kind: DataUpload
-                  metadata:
-                    namespace: {{ $backupList.metadata.namespace }}
-                    name: {{ $dataupload_obj.metadata.name }}
-                    labels:
-                      velero.io/backup-name: {{ $backupList.metadata.name }}
-                  status:
-                    phase: Completed
-                       {{- end }}
+                        {{- $data_upload_label := "velero.io/backup-name, velero.io/backup-name in (aa)" }}
+                        {{- $data_upload_label = replace "aa" $backupList.metadata.name $data_upload_label }}
 
-              - complianceType: musthave
-                objectDefinition:
-                  apiVersion: velero.io/v1
-                  kind: Backup
-                  metadata:
-                    namespace: {{ $backupList.metadata.namespace }}
-                    name: {{ $backupList.metadata.name }}
-                    labels:
-                      cluster.open-cluster-management.io/backup-cluster: {{ fromClusterClaim "id.openshift.io" }}
-                      cluster.open-cluster-management.io/backup-schedule-type: kubevirt
-                      velero.io/schedule-name: {{ $scheduleObj.metadata.name }}
-                  status:
-                    phase: Completed
+                        {{- range $dataupload_obj :=  (lookup "velero.io/v2alpha1" "DataUpload" "$backupList.metadata.namespace" "" $data_upload_label ).items }}
+                - complianceType: musthave
+                  objectDefinition:
+                    apiVersion: velero.io/v2alpha1
+                    kind: DataUpload
+                    metadata:
+                      namespace: {{ $backupList.metadata.namespace }}
+                      name: {{ $dataupload_obj.metadata.name }}
+                      labels:
+                        velero.io/backup-name: {{ $backupList.metadata.name }}
+                    status:
+                      phase: Completed
+                        {{- end }}
+
+                - complianceType: musthave
+                  objectDefinition:
+                    apiVersion: velero.io/v1
+                    kind: Backup
+                    metadata:
+                      namespace: {{ $backupList.metadata.namespace }}
+                      name: {{ $backupList.metadata.name }}
+                      labels:
+                        cluster.open-cluster-management.io/backup-cluster: {{ fromClusterClaim "id.openshift.io" }}
+                        cluster.open-cluster-management.io/backup-schedule-type: kubevirt
+                        velero.io/schedule-name: {{ $scheduleObj.metadata.name }}
+                    status:
+                      phase: Completed
+                      {{- end }}
                     {{- end }}
                   {{- end }}
                 {{- end }}
