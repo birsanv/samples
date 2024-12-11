@@ -78,12 +78,7 @@ spec:
                     kind: BackupStorageLocation
                     metadata:
                       namespace: {{ $ns }}
-                      ownerReferences:
-                        - apiVersion: oadp.openshift.io/v1alpha1
-                          blockOwnerDeletion: true
-                          controller: true
-                          kind: DataProtectionApplication
-                          name: {{ $dpa_name }}
+                      name: "{{ $dpa_name }}-1"
                     status:
                       phase: Available
                     {{- end}}
