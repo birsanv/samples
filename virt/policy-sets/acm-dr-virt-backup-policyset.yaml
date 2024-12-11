@@ -3,7 +3,9 @@ kind: PolicySet
 metadata:
   name: acm-dr-virt-backup-policyset
 spec:
-  description: backup virtual machines created on hub or managed clusters, using OADP
+  description: |
+    Backup virtualmachines.kubevirt.io resources on hub or OpenShift managed clusters, using OADP. 
+    Supports Container Storage Interface (CSI) and (CSI) with DataMover storage, File system and Volume snapshot options are not supported.
   policies:
     - acm-dr-virt-install
     - acm-dr-virt-backup
@@ -13,7 +15,8 @@ kind: PolicySet
 metadata:
   name: acm-dr-virt-restore-policyset
 spec:
-  description: backup virtual machines created on hub or managed clusters, using OADP
+  description: |
+    Restores virtualmachines.kubevirt.io resources created on hub or OpenShift managed clusters, using OADP. 
   policies:
     - acm-dr-virt-install
     - acm-dr-virt-restore
