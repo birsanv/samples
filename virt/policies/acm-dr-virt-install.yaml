@@ -56,7 +56,7 @@ spec:
                     {{- $is_hub := eq $acm_crd.metadata.name  $acm_crd_name }}
                     {{- /* get DPA name  */ -}}
                     {{- $acm_crd_name := "multiclusterhubs.operator.open-cluster-management.io" }}
-                    {{- range $dpa_objs := (lookup "oadp.openshift.io/v1alpha1" "DataProtectionApplication" "" $acm_crd_name).items  }}
+                    {{- range $dpa_objs := (lookup "oadp.openshift.io/v1alpha1" "DataProtectionApplication" $ns "").items  }}
                       {{- $dpa_name = $dpa_objs.metadata.name }}
                     {{- end}}
                   {{- end }}
@@ -169,7 +169,6 @@ spec:
                       name: {{ $cron_schedule_configmap_name }}
                       namespace: {{ $ns }}
                     data: '{{hub copyConfigMapData "" (fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "schedule_hub_config_name") hub}}'
-
 
             {{ if (not $is_hub) }}
             {{- /* for managed clusters only, copy the oadp secret and install OADP  */ -}}
