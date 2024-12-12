@@ -129,7 +129,7 @@ spec:
                 spec:
                   backupName: {{ $backupName }}
                   restorePVs: true
-                  {{ if not (eq $vms_ns "") }}
+                  {{ if not (eq $vms_ns " ") }}
                   includedNamespaces:
                     {{- range $vms_namespace := split " " $vms_ns }}
                     {{ if not (eq $vms_namespace "") }}
@@ -147,7 +147,7 @@ spec:
                           {{- end }}
                           key: kubevirt.io/created-by
                           operator: In
-                    {{ if not (eq $vms_ns "") }}
+                    {{ if not (eq $vms_ns " ") }}
                     - matchExpressions:
                         - values:
                           {{- range $vms_name := split " " $vms_names }}
