@@ -253,7 +253,7 @@ spec:
                     status:
                       phase: Enabled
 
-                  {{ if (eq $scheduleObjLastBckTime "") }}
+                  {{ if not (eq $scheduleObjLastBckTime "") }}
                     {{- range $backupList := (lookup "velero.io/v1" "Backup" "" "" $schedule_label).items }}
                       {{- $backupCreation := $backupList.metadata.creationTimestamp  }}
                       {{ if eq $backupCreation $scheduleObjLastBckTime }}
