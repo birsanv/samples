@@ -51,19 +51,10 @@ spec:
               {{- end }}
 
               {{- $generateSchedule := $vms_inst_exists }}
-
+              {{- /* keep track of schedules created as a result of vm annotations; any schedule not in this list must be deleted  */ -}}
+              {{- $valid_schedules := "=" }}
               {{- /* if there are any vm instances  */ -}}
-              {{ if not $vms_inst_exists }}
-                  - complianceType: mustnothave
-                    objectDefinition:
-                      apiVersion: velero.io/v1
-                      kind: Schedule
-                      metadata:
-                        namespace: {{ $ns }}
-                        labels:
-                          cluster.open-cluster-management.io/backup-schedule-type: kubevirt
-              {{ else }}
-
+              {{ if $vms_inst_exists }}
                 {{- $cron_schedule := "10 */1 * * *" }}
                 {{- $ttl_schedule := "24h0m0s" }}
                 {{- $paused_schedule := false }}
@@ -144,7 +135,7 @@ spec:
                     {{- end }}
 
                   {{ if and (not (eq $vms_ns " ")) (not (eq $vms_names " ")) }}
-
+                    {{- $valid_schedules = (cat $valid_schedules $acm_virt_sch_name_cron "=") | replace " " "" }}
                     - complianceType: mustonlyhave
                       objectDefinition:
                         apiVersion: velero.io/v1
@@ -205,12 +196,26 @@ spec:
                     {{- end }}
                   {{- /* end query cron schedules */ -}}
                   {{- end }}
-
                 {{- /* generateSchedule is true */ -}}
                 {{- end}}
-
-              {{- /* VM CRD is installed */ -}}
               {{- end}}
+
+              {{- /* clean old schedules  */ -}}
+             {{- $schedule_label := "cluster.open-cluster-management.io/backup-schedule-type, cluster.open-cluster-management.io/backup-schedule-type in (kubevirt)"}}
+              {{- range $scheduleObj := (lookup "velero.io/v1" "Schedule" "" ""  $schedule_label).items }}
+
+                {{- $search_str := (cat "=" $scheduleObj.metadata.name "=") | replace " " ""}}
+                {{ if not (contains $search_str $valid_schedules) }}
+                    - complianceType: mustnothave
+                      objectDefinition:
+                        apiVersion: velero.io/v1
+                        kind: Schedule
+                        metadata:
+                          namespace: {{ $scheduleObj.metadata.namespace }}
+                          name: {{ $scheduleObj.metadata.name }}
+                {{- end }}
+              {{- end }}
+
             {{- end }}
           remediationAction: enforce
           pruneObjectBehavior: DeleteIfCreated
