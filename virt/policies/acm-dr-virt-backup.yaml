@@ -241,8 +241,6 @@ spec:
                     {{- $scheduleObjLastBckTime = (index $scheduleObj.status "lastBackup") }}
                   {{- end }}
 
-                  {{ if (eq $scheduleObjLastBckTime "") }}
-
                 - complianceType: musthave
                   objectDefinition:
                     apiVersion: velero.io/v1
@@ -254,9 +252,8 @@ spec:
                         cluster.open-cluster-management.io/backup-schedule-type: kubevirt 
                     status:
                       phase: Enabled
-                      lastBackup: "some value"
 
-                  {{ else }}
+                  {{ if (eq $scheduleObjLastBckTime "") }}
                     {{- range $backupList := (lookup "velero.io/v1" "Backup" "" "" $schedule_label).items }}
                       {{- $backupCreation := $backupList.metadata.creationTimestamp  }}
                       {{ if eq $backupCreation $scheduleObjLastBckTime }}
