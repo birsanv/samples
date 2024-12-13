@@ -171,6 +171,7 @@ spec:
             {{- end }}
           remediationAction: enforce
           severity: high
+          pruneObjectBehavior: DeleteIfCreated
     - objectDefinition:
         apiVersion: policy.open-cluster-management.io/v1
         kind: ConfigurationPolicy
