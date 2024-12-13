@@ -262,7 +262,7 @@ How this works:
 The backup Policy looks for `kubevirt.io.VirtualMachine` on this cluster having a `cluster.open-cluster-management.io/backup-vm` label. 
 
 <b>Note</b>:
-If the vm that needs to be backed up is running on the hub, the Policy will assume the OADP namespace is fixed to `open-cluster-management-backup` and will not try to install OADP because this should be installed by the backup chart when the backup component is enabled on  the MCH resource.
+If the cluster is a hub cluster, it will just validate that OADP is installed in the open-cluster-management-backup namespace and validates that the DataProtectionApplication exists and has the required configuration. It will not attempt to install OADP or create the DataProtectionApplication resource - this is because on the hub OADP should be installed by the backup chart using the MCH backup option and you are expected to configure DataProtectionApplication when you enable this backup opion.
 
 ## Backup schedules 
 
