@@ -62,6 +62,7 @@ spec:
                         nodeAgent:
                           enable: true
                           uploaderType: kopia
+                  {{ if not (eq "" $dpa_name )}}
                 - complianceType: musthave
                   objectDefinition:
                     apiVersion: velero.io/v1
@@ -72,6 +73,7 @@ spec:
                     status:
                       phase: Available
                     {{- end}}
+                  {{- end }}
           remediationAction: inform
           severity: high
 
