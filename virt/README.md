@@ -2,6 +2,16 @@
 
 Backup and restore virtualmachines.kubevirt.io resources on OpenShift hub or OpenShift managed clusters, using OADP. 
 
+All VirtualMachines with this label annotation will be backed up by the corresponding schedules:
+
+```yaml
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  labels:
+    cluster.open-cluster-management.io/backup-vm: <schedule_name>
+```
+
 Supports the following backup and restore storage options:
 - Container Storage Interface (CSI) backups
 - Container Storage Interface (CSI) backups with DataMover
@@ -17,11 +27,12 @@ The following storage options are excluded:
   - [Install Policy](#acm-dr-virt-install-policy)
   - [Backup Policy](#acm-dr-virt-backup-policy)
   - [Restore Policy](#acm-dr-virt-restore-policy)
+- [User Defined ConfigMaps](#user-defined-configmaps)
 - [Scenario](#scenario)
   - [acm-virt-config ConfigMap](#configmap-set-by-using-the-managedcluster-acm-virt-config-label)
 - [Backup Schedules](#backup-schedules)
 
-## List of PolicySets 
+# List of PolicySets 
 
 PolicySet   | Description 
 -------------------------------------------| ----------- 
@@ -33,7 +44,7 @@ PolicySet   | Description
 ![Restore PolicySet](images/restore-set.png)
 
 
-## List of Policies 
+# List of Policies 
 
 Policy      | Description 
 -------------------------------------------| ----------- 
@@ -243,6 +254,135 @@ metadata:
 
 ![Restore Policy Details](images/restore-details.png)
 
+# User Defined ConfigMaps
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: acm-virt-config-14
+data:
+
+  ###### Configuration for the acm-dr-virt-install policy ###
+  ########################################################
+
+  # backupNS is the ns where velero/oadp is installed on the cluster
+  backupNS: oadp-ns
+  channel: stable-1.4
+  # credentials_hub_secret_name is the name of the Secret resource used by the OADP DPA resource to connect to the storage location
+  # hub-secret must be a Secret available under the acm-virt-config namespace. It will be copied over to the backup cluster by the policy
+  credentials_hub_secret_name: "hub-secret"
+  credentials_name: "cloud-credentials"
+  # only VMs with the backup_label_name label will be backed up
+  backup_label_name: "cluster.open-cluster-management.io/backup-vm"
+  dpa_name: dpa-hub
+  dpa_spec: "{
+  \"backupLocations\": [
+    {
+      \"velero\": {
+        \"config\": {
+          \"profile\": \"default\",
+          \"region\": \"us-east-1\"
+        },
+        \"credential\": {
+          \"key\": \"cloud\",
+          \"name\": \"cloud-credentials\"
+        },
+        \"default\": true,
+        \"objectStorage\": {
+          \"bucket\": \"vb-velero-backup\",
+          \"prefix\": \"hub-a\"
+        },
+        \"provider\": \"aws\"
+      }
+    }
+  ],
+  \"configuration\": {
+    \"nodeAgent\": {
+      \"enable\": true,
+      \"uploaderType\": \"kopia\"
+    },
+    \"velero\": {
+      \"defaultPlugins\": [
+        \"csi\",       
+        \"openshift\",
+        \"kubevirt\",
+        \"aws\"
+      ],
+      \"podConfig\": {
+        \"resourceAllocations\": {
+          \"limits\": {
+            \"cpu\": \"2\",
+            \"memory\": \"1Gi\"
+          },
+          \"requests\": {
+            \"cpu\": \"500m\",
+            \"memory\": \"256Mi\"
+          }
+        }
+      }
+    }
+  },
+}"
+  ##### end configuration for the acm-dr-virt-install policy##
+
+  ###### Configuration for the acm-dr-virt-backup policy ###
+  ########################################################
+  scheduleTTL: 24h
+  # define the schedules to be used by the vm backup; schedule_hub_config_name is the name of the configmap defining all the 
+  # supported cron job definitions
+  # you should define a ConfigMap named schedule-cron and set values such as : daily_8am: 0 8 * * *
+  schedule_hub_config_name: "schedule-cron"
+  ##
+  schedulePaused: "false"
+  ##### end configuration for the acm-dr-virt-backup policy##
+
+  ###### Configuration for the acm-dr-virt-restore policy ###
+  ########################################################
+  ## restore_hub_config_name is the name of the ConfigMap defining the restore information
+  ## The user should create on the hub a ConfigMap with the name defined below
+  ## if this is not a restore operation, set the restoreName in the configName to emmpty 
+  restore_hub_config_name: "restore-config"
+  ##### end configuration for the acm-dr-virt-restore policy##
+```
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: schedule-cron
+data:
+
+  ###### Configuration for the acm-dr-virt-backup policy, defining supported cron jobs for the backup schedule ###
+  ########################################################
+
+  # define the schedules to be used by the vm backup; for a vm to use the twice_a_day schedule, set this label on the vm 
+  # cluster.open-cluster-management.io/backup-vm: twice_a_day
+  twice_a_day: "0 */12 * * *"
+  hourly: "0 */1 * * *"
+  daily_8am: "0 8 * * *"
+```
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: restore-config
+data:
+
+  ###### Configuration for the acm-dr-virt-restore policy, defining the vms to be restored on this cluster ###
+  ########################################################
+
+  # define the name of the velero restore, for example acm-restore-twice-a-day-20241208155210
+  # set this to "" if this is not a restore operation
+  restoreName: ""
+  # define the list of VM UID to be restored; enter the UIDs separated by space
+  vmsUID: "b0ed31e9-ee17-4a59-9aa5-76b15a10ee42 uid2"
+  # backupName is the name of the backup to restore
+  backupName: acm-rho-virt-schedule-twice-a-day-20241211120055
+  # id of the cluster where the restore should be run; used to enforce the target for the restore operation, in case multiple clusters share the same acm-virt configMap
+  restoreClusterID: ""
+```
 
 # Scenario
 

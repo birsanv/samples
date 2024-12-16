@@ -83,8 +83,9 @@ spec:
             {{- $cls_restore_configmap_name := "acm-virt-restore-cls" }}
             
             {{- $restoreName := fromConfigMap $ns $cls_restore_configmap_name "restoreName" }}
+            {{- $isTargetCluster := eq (fromConfigMap $ns $cls_restore_configmap_name "restoreClusterID") ( fromClusterClaim "id.openshift.io" ) }}
             
-            {{ if not (eq "" $restoreName) }}
+            {{ if and $isTargetCluster (not (eq "" $restoreName)) }}
 
               {{- /* keep track of the last restore run by this policy so when the policy is disabled and enabled again (install policy errors), the restore doesn't rerun */ -}}
               {{- $restore_annot_cluster_id := fromClusterClaim "id.openshift.io" }}
