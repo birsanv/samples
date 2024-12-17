@@ -12,6 +12,11 @@ metadata:
     cluster.open-cluster-management.io/backup-vm: <schedule_name>
 ```
 
+Two personna:
+- hub admin, who installs the policies and provides the ConfigMap for installing and configuring OADP 
+- vm user who wants to backup a vm or restore it from a backup. This user assumes the configuration is already setup and he just appends the 
+`cluster.open-cluster-management.io/backup-vm: <schedule_name>` to the VM he wants to backup or, in the case of a restore operation, updates the `restore_hub_config_name` property with the restore information: backup name, name of the restore, vms to restore from the specified backup.
+
 Supports the following backup and restore storage options:
 - Container Storage Interface (CSI) backups
 - Container Storage Interface (CSI) backups with DataMover
@@ -255,6 +260,10 @@ metadata:
 ![Restore Policy Details](images/restore-details.png)
 
 # User Defined ConfigMaps
+
+The user personna creating these configuration maps is the hub admin, the person who installs the policies on the hub.
+This is different than the user who decides on what vms to backup or restore. This user assumes the configuration is already setup and he just appends the 
+`cluster.open-cluster-management.io/backup-vm: <schedule_name>` to the VM he wants to backup or, in the case of a restore operation, updates the `restore_hub_config_name` property with the restore information: backup name, name of the restore, vms to restore from the specified backup.
 
 ```yaml
 apiVersion: v1
