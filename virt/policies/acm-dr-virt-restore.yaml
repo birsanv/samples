@@ -82,13 +82,18 @@ spec:
             {{- /* cls_restore_configmap_name is the name of the main restore config map, copied over to the cluster  */ -}}
             {{- $cls_restore_configmap_name := "acm-virt-restore-cls" }}
             
-            {{- $restoreName := fromConfigMap $ns $cls_restore_configmap_name "restoreName" }}
-            {{- $isTargetCluster := eq (fromConfigMap $ns $cls_restore_configmap_name "restoreClusterID") ( fromClusterClaim "id.openshift.io" ) }}
-            
-            {{ if and $isTargetCluster (not (eq "" $restoreName)) }}
+            {{- $restoreClusterID := fromClusterClaim "id.openshift.io" }}
+            {{- $restoreNameProp := (cat  $restoreClusterID "_" "restoreName") | replace " " ""}}
 
-              {{- $backupName := fromConfigMap $ns $cls_restore_configmap_name "backupName" }}
-              {{- $vmUIDs := fromConfigMap $ns $cls_restore_configmap_name "vmsUID" }}
+            {{- $restoreName := fromConfigMap $ns $cls_restore_configmap_name $restoreNameProp }}
+           
+            {{ if not (eq "" $restoreName) }}
+
+              {{- $backupNameProp := (cat  $restoreClusterID "_" "backupName") | replace " " ""}}
+              {{- $backupName := fromConfigMap $ns $cls_restore_configmap_name $backupNameProp }}
+
+              {{- $vmUIDsProp := (cat  $restoreClusterID "_" "vmsUID") | replace " " ""}}
+              {{- $vmUIDs := fromConfigMap $ns $cls_restore_configmap_name $vmUIDsProp }}
 
               {{- /* vms_ns gives the list of all namespaces where VM exist  */ -}}
               {{ $vms_ns := " " }}
