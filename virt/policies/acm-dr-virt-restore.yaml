@@ -87,13 +87,6 @@ spec:
             
             {{ if and $isTargetCluster (not (eq "" $restoreName)) }}
 
-              {{- /* keep track of the last restore run by this policy so when the policy is disabled and enabled again (install policy errors), the restore doesn't rerun */ -}}
-              {{- $restore_annot_cluster_id := fromClusterClaim "id.openshift.io" }}
-              {{- $restore_annot_cluster_id := (cat "acm-virt-" $restore_annot_cluster_id) | replace " " "" }}
-              {{- $last_restore_id := (cat $ns "--" $restoreName) | replace " " "" }}
-              {{- $restore_created_already := false }}
-              {{- $restore_exists := eq (lookup "velero.io/v1" "Restore" $ns $restoreName).metadata.name $restoreName }}
-
               {{- $backupName := fromConfigMap $ns $cls_restore_configmap_name "backupName" }}
               {{- $vmUIDs := fromConfigMap $ns $cls_restore_configmap_name "vmsUID" }}
 
@@ -103,9 +96,6 @@ spec:
               {{ $vms_names := " " }}
               {{- $backup_to_restore := lookup "velero.io/v1" "Backup" $ns $backupName }}
               {{ if eq $backup_to_restore.metadata.name $backupName }}
-
-                {{- $restore_created_already = hasKey $backup_to_restore.metadata.annotations $restore_annot_cluster_id }}
-                {{- $restore_created_already = and $restore_created_already (eq (index $backup_to_restore.metadata.annotations $restore_annot_cluster_id) $last_restore_id)}}
 
                 {{- range $vms_uid := split " " $vmUIDs }}
                   {{ if and (not (eq $vms_uid "")) (hasKey $backup_to_restore.metadata.annotations $vms_uid) }}
@@ -129,7 +119,6 @@ spec:
                 {{- end }}
               {{- /* backup exists */ -}}
               {{- end }}
-              {{ if or (not $restore_created_already) $restore_exists }}
             - complianceType: musthave
               objectDefinition:
                 apiVersion: velero.io/v1
@@ -177,19 +166,6 @@ spec:
                           {{- end }}
                           key: kubevirt.io/domain
                           operator: In
-                {{- end }}
-                {{- /* if backup exists */ -}}
-                {{ if eq $backup_to_restore.metadata.name $backupName }}
-            - complianceType: musthave
-              objectDefinition:
-                apiVersion: velero.io/v1
-                kind: Backup
-                metadata:
-                  name: {{ $backupName }}
-                  namespace: {{ $ns }}
-                  annotations:
-                    {{ $restore_annot_cluster_id }}: {{ $last_restore_id }}
-                {{- end }}
               {{- end }}
             {{- end }}
             {{- end }}
