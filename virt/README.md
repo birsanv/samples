@@ -33,6 +33,9 @@ The following storage options are excluded:
   - [Backup Policy](#acm-dr-virt-backup-policy)
   - [Restore Policy](#acm-dr-virt-restore-policy)
 - [User Defined ConfigMaps](#user-defined-configmaps)
+  - [acm-virt-config](#acm-virt-config)
+  - [schedule-cron](#schedule-cron)
+  - [restore-config](#restore-config)
 - [Scenario](#scenario)
   - [acm-virt-config ConfigMap](#configmap-set-by-using-the-managedcluster-acm-virt-config-label)
 - [Backup Schedules](#backup-schedules)
@@ -261,9 +264,11 @@ metadata:
 
 # User Defined ConfigMaps
 
-The user persona creating these configuration maps is the hub admin, the person who installs the policies on the hub.
+The user persona creating these configuration maps is the hub admin, the one who places the policies on a managed cluster.
 This is different than the user who decides on what vms to backup or restore. This user assumes the configuration is already setup and he just appends the 
 `cluster.open-cluster-management.io/backup-vm: <schedule_name>` to the VM he wants to backup or, in the case of a restore operation, updates the `restore_hub_config_name` property with the restore information: backup name, name of the restore, vms to restore from the specified backup.
+
+## acm-virt-config
 
 ```yaml
 apiVersion: v1
@@ -355,6 +360,8 @@ data:
   ##### end configuration for the acm-dr-virt-restore policy##
 ```
 
+## schedule-cron
+
 ```yaml
 apiVersion: v1
 kind: ConfigMap
@@ -372,32 +379,54 @@ data:
   daily_8am: "0 8 * * *"
 ```
 
+## restore-config
+
+The user persona for this ConfigMap is the hub admin, who decides to restore vms on one or more managed clusters.
+
+The admin creates on the hub and empty `restore-config` ConfigMap when creating the `acm-virt-config` ConfigMap for the managed cluster. These indicates that there is no restore operation for the managed cluster when these policies are placed.
+
+When the admin is ready to run a restore operation, it updates the `restore-config` with the information regarding the name of the backup to be restored, list of vm UIDs to be restored from the backup and the name of the restore resource. See the samples below on how this configuration should look like.
+
+
+Sample `restore-config` when no restore is required :
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: restore-config
+data: {}
+```
+
+Sample `restore-config` when a restore is required on cluster with ID 41965c15-1d7e-41c7-b038-ce09372d9ab9. Restore from backup `acm-rho-virt-schedule-twice-a-day-20241211120055` only vms with UID `uid1` and `uid2`:
+
 ```yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: restore-config
 data:
+  41965c15-1d7e-41c7-b038-ce09372d9ab9_restoreName: "restore-new"
+  41965c15-1d7e-41c7-b038-ce09372d9ab9_vmsUID: "uid1 uid2"
+  41965c15-1d7e-41c7-b038-ce09372d9ab9_backupName: acm-rho-virt-schedule-twice-a-day-20241211120055 
+```
 
-  ###### Configuration for the acm-dr-virt-restore policy, defining the vms to be restored on the cluster with ID clusterID ###
-  ###### replace <clusterID> in the properties names with the id of the cluster where the restore should be executed
-  ########################################################
+Sample `restore-config` when more than one restore is required, on two clusters with ID 41965c15-1d7e-41c7-b038-ce09372d9ab9 and c2aed784-eb54-433c-a53d-b4bae248958c.
+(note that only one restore per cluster can be specified at one point) :
 
-  # define the name of the velero restore to be created on the cluster with ID clusterID; for example restore-acm-rho-virt-schedule-twice-a-day-20241211120055
-  # set this to "" if this is not a restore operation for the cluster with ID clusterID
-  # for example, for a cluster ID 41965c15-1d7e-41c7-b038-ce09372d9ab9, the property name is 41965c15-1d7e-41c7-b038-ce09372d9ab9_restoreName
-  # 41965c15-1d7e-41c7-b038-ce09372d9ab9_restoreName: ""
-  clusterID_restoreName: ""
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: restore-config
+data:
+  41965c15-1d7e-41c7-b038-ce09372d9ab9_restoreName: "restore-new"
+  41965c15-1d7e-41c7-b038-ce09372d9ab9_vmsUID: "uid1 uid2"
+  41965c15-1d7e-41c7-b038-ce09372d9ab9_backupName: acm-rho-virt-schedule-twice-a-day-20241211120055 
 
-  # define the list of VM UID to be restored  on the cluster with ID clusterID; enter the UIDs separated by space
-  # for example, for a cluster ID 41965c15-1d7e-41c7-b038-ce09372d9ab9, the property name is 41965c15-1d7e-41c7-b038-ce09372d9ab9_vmsUID
-  # 41965c15-1d7e-41c7-b038-ce09372d9ab9_vmsUID: "uid1 uid2"
-  clusterID_vmsUID: "uid1 uid2"
-
-  # clusterID_backupName is the name of the backup to restore on the cluster with ID clusterID
-  # for example, for a cluster ID 41965c15-1d7e-41c7-b038-ce09372d9ab9, the property name is 41965c15-1d7e-41c7-b038-ce09372d9ab9_backupName
-  # 41965c15-1d7e-41c7-b038-ce09372d9ab9_backupName: acm-rho-virt-schedule-twice-a-day-20241211120055 
-  clusterID_backupName: backupName
+  c2aed784-eb54-433c-a53d-b4bae248958c_restoreName: "restore-new-2"
+  c2aed784-eb54-433c-a53d-b4bae248958c_vmsUID: "uid3"
+  c2aed784-eb54-433c-a53d-b4bae248958c_backupName: acm-rho-virt-schedule-twice-a-day-20241211120088 
 ```
 
 # Scenario
