@@ -203,10 +203,10 @@ spec:
 
             {{- /* cls_restore_configmap_name is the name of the main restore config map, copied over to the cluster  */ -}}
             {{- $cls_restore_configmap_name := "acm-virt-restore-cls" }}
-            {{- $restoreName := fromConfigMap $ns $cls_restore_configmap_name "restoreName" }}
-            {{- $restore_exists := and (not (eq "" $restoreName)) (eq (lookup "velero.io/v1" "Restore" $ns $restoreName).metadata.name $restoreName) }}
+            {{- $restoreNameProp := (cat  (fromClusterClaim "id.openshift.io") "_" "restoreName") | replace " " ""}}
 
-            {{ if $restore_exists }}
+            {{- $restoreName := fromConfigMap $ns $cls_restore_configmap_name $restoreNameProp }}
+
             - complianceType: musthave
               objectDefinition:
                 apiVersion: velero.io/v1
@@ -216,7 +216,6 @@ spec:
                   namespace: {{ $ns }}
                 status:
                   phase: Completed
-            {{- end }}
             {{- end }}
           remediationAction: inform
           severity: high
