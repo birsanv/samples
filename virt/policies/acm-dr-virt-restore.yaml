@@ -206,6 +206,10 @@ spec:
             {{- $restoreNameProp := (cat  (fromClusterClaim "id.openshift.io") "_" "restoreName") | replace " " ""}}
 
             {{- $restoreName := fromConfigMap $ns $cls_restore_configmap_name $restoreNameProp }}
+            {{- $restoreName := fromConfigMap $ns $cls_restore_configmap_name $restoreNameProp }}
+
+            {{- $restore_exists := and (not (eq "" $restoreName)) (eq (lookup "velero.io/v1" "Restore" $ns $restoreName).metadata.name $restoreName) }}
+            {{ if $restore_exists }}
 
             - complianceType: musthave
               objectDefinition:
@@ -216,6 +220,7 @@ spec:
                   namespace: {{ $ns }}
                 status:
                   phase: Completed
+            {{- end }}
             {{- end }}
           remediationAction: inform
           severity: high
