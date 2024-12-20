@@ -44,6 +44,7 @@ spec:
                       {{- $dpa_name = $dpa_objs.metadata.name }}
                     {{- end}}
                   {{- end }}
+                  {{- $bsl_name := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "storageLocation" hub}}" }}
 
                 - complianceType: musthave
                   objectDefinition:
@@ -69,12 +70,19 @@ spec:
                     kind: BackupStorageLocation
                     metadata:
                       namespace: {{ $ns }}
+                      {{if not (eq "" $bsl_name) }}
+                      name: {{ $bsl_name }}
+                      {{- end }}
                       ownerReferences:
                       - apiVersion: oadp.openshift.io/v1alpha1
                         blockOwnerDeletion: true
                         controller: true
                         kind: DataProtectionApplication
                         name: {{ $dpa_name }}
+                    {{if eq "" $bsl_name }}
+                    spec:
+                      default: true
+                    {{- end }}
                     status:
                       phase: Available
                     {{- end}}

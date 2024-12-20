@@ -323,18 +323,6 @@ data:
         \"kubevirt\",
         \"aws\"
       ],
-      \"podConfig\": {
-        \"resourceAllocations\": {
-          \"limits\": {
-            \"cpu\": \"2\",
-            \"memory\": \"1Gi\"
-          },
-          \"requests\": {
-            \"cpu\": \"500m\",
-            \"memory\": \"256Mi\"
-          }
-        }
-      }
     }
   },
 }"
@@ -349,6 +337,11 @@ data:
   schedule_hub_config_name: "schedule-cron"
   ##
   schedulePaused: "false"
+  ## storageLocation is an optional property, if set it should point to the velero BackupStorageLocation resource name to be used by the schedules.
+  ## The BackupStorageLocation with this name should exist and with a status of Available.
+  # If storageLocation is not set, the default BackupStorageLocation is being used.
+  # storageLocation: ""
+  ##
   ##### end configuration for the acm-dr-virt-backup policy##
 
   ###### Configuration for the acm-dr-virt-restore policy ###

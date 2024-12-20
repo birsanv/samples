@@ -48,6 +48,15 @@ spec:
                     apiVersion: v1
                     kind: ConfigMap
                     metadata:
+                      name: "acm-virt-config-cls"
+                      namespace: {{ $ns }}
+                    data: '{{hub copyConfigMapData "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) hub}}'
+
+                - complianceType: mustonlyhave
+                  objectDefinition:
+                    apiVersion: v1
+                    kind: ConfigMap
+                    metadata:
                       name: {{ $cron_schedule_configmap_name }}
                       namespace: {{ $ns }}
                     data: '{{hub copyConfigMapData "" (fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "schedule_hub_config_name") hub}}'
@@ -105,26 +114,27 @@ spec:
                 {{- $dpa_crd_name := "dataprotectionapplications.oadp.openshift.io" }}
                 {{- $dpa_crd := lookup "apiextensions.k8s.io/v1" "CustomResourceDefinition" "" "dataprotectionapplications.oadp.openshift.io"  }}
                 {{- $dpa_crd_exists := eq $dpa_crd.metadata.name  $dpa_crd_name }}
+                {{- $storageLocation := "" }}
 
                 {{- $oadp_channel := "" }}
                 {{ if ($sch_crd_exists) }}
                   {{- /* Velero Schedule CRD is installed */ -}}
 
-                  {{hub $configMap := (lookup "v1" "ConfigMap" "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config"))) hub}}
-                  {{- $ttl_schedule = "{{hub $configMap.data.scheduleTTL hub}}" }}
-                  {{- $paused_schedule = "{{hub $configMap.data.schedulePaused hub}}" }}
-                  {{- $oadp_channel = "{{hub $configMap.data.channel hub}}" }}
                   {{ if not $is_hub }}
-                    {{- /* always generate the schedule for managed clusters */ -}}
-                    {{- $ns = "{{hub $configMap.data.backupNS hub}}" }}
+                    {{- $ns = "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backupNS" hub}}" }}
                   {{- end}}
+
+                  {{- $ttl_schedule = fromConfigMap $ns "acm-virt-config-cls" "scheduleTTL" }}
+                  {{- $paused_schedule = fromConfigMap $ns "acm-virt-config-cls" "paused" }}
+                  {{- $storageLocation = fromConfigMap $ns "acm-virt-config-cls" "storageLocation" }}
+                  {{- $oadp_channel = fromConfigMap $ns "acm-virt-config-cls" "channel" }}
 
                 {{- /* Velero Schedule CRD is installed */ -}}
                 {{- end }}
 
                 {{ if $generateSchedule }}
 
-                  {{- $schedule_label := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backup_label_name" hub}}" }}
+                  {{- $schedule_label := fromConfigMap $ns "acm-virt-config-cls" "backup_label_name" }}
                   {{- /* get all vms with a backup label  */ -}}
                   {{- $vms_to_backup := (lookup "kubevirt.io/v1" "VirtualMachine" "" "" $schedule_label) }}
 
@@ -228,7 +238,9 @@ spec:
                                     {{- end }}
                                     key: kubevirt.io/domain
                                     operator: In
-
+                            {{ if not (eq "" $storageLocation) }}
+                            storageLocation: "{{ $storageLocation }}-11"
+                            {{- end }}
                     {{- /* there are VM resources */ -}}
                     {{- end }}
                   {{- /* end query cron schedules */ -}}
