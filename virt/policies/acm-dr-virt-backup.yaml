@@ -239,7 +239,7 @@ spec:
                                     key: kubevirt.io/domain
                                     operator: In
                             {{ if not (eq "" $storageLocation) }}
-                            storageLocation: "{{ $storageLocation }}-11"
+                            storageLocation: "{{ $storageLocation }}"
                             {{- end }}
                     {{- /* there are VM resources */ -}}
                     {{- end }}
