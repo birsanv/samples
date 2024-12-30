@@ -78,7 +78,7 @@ spec:
                   {{- /* use the subscription name and operator group from the existing OADP installation, if one exists in this ns  */ -}}
                   {{- $subscription_name := "redhat-oadp-operator-subscription" }}
                   {{- range $ss := (lookup "operators.coreos.com/v1alpha1" "Subscription" $ns "").items }}
-                    {{ if and (eq $ss.spec.name "redhat-oadp-operator")  (eq $ss.spec.channel $ch )}}
+                    {{ if eq $ss.spec.name "redhat-oadp-operator" }}
                       {{- $subscription_name = $ss.metadata.name }}
                     {{- end }}
                   {{- end }}
@@ -183,16 +183,24 @@ spec:
             {{ if (not $is_hub) }}
                 {{- /* use the subscription name and operator group from the existing OADP installation, if one exists in this ns  */ -}}
                 {{- $subscription_name := "redhat-oadp-operator-subscription" }}
-                {{- $operator_name := "redhat-oadp-operator-group" }}
-                {{- range $ss := (lookup "operators.coreos.com/v1alpha1" "Subscription" $ns "").items }}
-                  {{ if and (eq $ss.spec.name "redhat-oadp-operator")  (eq $ss.spec.channel $oadp_channel )}}
-                    {{- $subscription_name = $ss.metadata.name }}
+                {{- /* if another OADP version was installed don't try to install this version  */ -}}
+                {{- $found_other_version := false }}
+                {{- range $ss := (lookup "operators.coreos.com/v1alpha1" "Subscription" "" "").items }}
+                  {{ if and (not $found_other_version) (eq $ss.spec.name "redhat-oadp-operator") }}
+                    {{ if eq $ss.spec.channel $oadp_channel }}
+                      {{- $subscription_name = $ss.metadata.name }}
+                    {{- else }}
+                      {{- $found_other_version = true }}
+                    {{- end }}
                   {{- end }}
                 {{- end }}
+
+                {{- $operator_name := "redhat-oadp-operator-group" }}
                 {{- range $ops := (lookup "operators.coreos.com/v1" "OperatorGroup" $ns "").items }}
                   {{- $operator_name = $ops.metadata.name }}
                 {{- end }}
 
+                {{ if not $found_other_version }}
                 - complianceType: musthave
                   objectDefinition:
                     apiVersion: v1
@@ -241,6 +249,7 @@ spec:
                       namespace: {{ $ns }}
                     spec: '{{hub (fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "dpa_spec") | toLiteral hub}}'
                   {{- end }}
+                {{- end }}
                 {{- end }}
           remediationAction: enforce
           pruneObjectBehavior: DeleteIfCreated
