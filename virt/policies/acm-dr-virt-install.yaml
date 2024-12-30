@@ -28,7 +28,7 @@ spec:
             {{ if not $is_hub }}
               {{- $ch := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "channel" hub}}" }}
               {{- range $ss := (lookup "operators.coreos.com/v1alpha1" "Subscription" "" "").items }}
-                {{- if (eq $ss.spec.name "redhat-oadp-operator")  }}
+                {{ if (eq $ss.spec.name "redhat-oadp-operator")  }}
                 - complianceType: musthave
                   objectDefinition:
                     kind: Subscription
@@ -67,14 +67,36 @@ spec:
                     {{- $ns = "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backupNS" hub}}" }}
                     {{- $dpa_name = "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "dpa_name" hub}}" }}
                   {{ else }}
-                    {{- $is_hub := eq $acm_crd.metadata.name  $acm_crd_name }}
                     {{- /* get DPA name  */ -}}
-                    {{- $acm_crd_name := "multiclusterhubs.operator.open-cluster-management.io" }}
                     {{- range $dpa_objs := (lookup "oadp.openshift.io/v1alpha1" "DataProtectionApplication" $ns "").items  }}
                       {{- $dpa_name = $dpa_objs.metadata.name }}
                     {{- end}}
                   {{- end }}
+
                   {{- $bsl_name := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "storageLocation" hub}}" }}
+                  {{- $ch := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "channel" hub}}" }}
+                  {{- /* use the subscription name and operator group from the existing OADP installation, if one exists in this ns  */ -}}
+                  {{- $subscription_name := "redhat-oadp-operator-subscription" }}
+                  {{- range $ss := (lookup "operators.coreos.com/v1alpha1" "Subscription" $ns "").items }}
+                    {{ if and (eq $ss.spec.name "redhat-oadp-operator")  (eq $ss.spec.channel $ch )}}
+                      {{- $subscription_name = $ss.metadata.name }}
+                    {{- end }}
+                  {{- end }}
+
+                - complianceType: musthave
+                  objectDefinition:
+                    apiVersion: operators.coreos.com/v1alpha1
+                    kind: Subscription
+                    metadata:
+                      name: {{ $subscription_name }}
+                      namespace: {{ $ns }}
+                    spec:
+                      channel: {{ $ch }}
+                    status:
+                      conditions:
+                        - reason: AllCatalogSourcesHealthy
+                          status: 'False'
+                          type: CatalogSourcesUnhealthy
 
                 - complianceType: musthave
                   objectDefinition:
@@ -93,6 +115,12 @@ spec:
                         nodeAgent:
                           enable: true
                           uploaderType: kopia
+                    status:
+                      conditions:
+                        - reason: Complete
+                          status: 'True'
+                          type: Reconciled
+               
                   {{ if not (eq "" $dpa_name )}}
                 - complianceType: musthave
                   objectDefinition:
@@ -153,6 +181,18 @@ spec:
 
             {{- /* for managed clusters only, copy the oadp secret and install OADP  */ -}}
             {{ if (not $is_hub) }}
+                {{- /* use the subscription name and operator group from the existing OADP installation, if one exists in this ns  */ -}}
+                {{- $subscription_name := "redhat-oadp-operator-subscription" }}
+                {{- $operator_name := "redhat-oadp-operator-group" }}
+                {{- range $ss := (lookup "operators.coreos.com/v1alpha1" "Subscription" $ns "").items }}
+                  {{ if and (eq $ss.spec.name "redhat-oadp-operator")  (eq $ss.spec.channel $oadp_channel )}}
+                    {{- $subscription_name = $ss.metadata.name }}
+                  {{- end }}
+                {{- end }}
+                {{- range $ops := (lookup "operators.coreos.com/v1" "OperatorGroup" $ns "").items }}
+                  {{- $operator_name = $ops.metadata.name }}
+                {{- end }}
+
                 - complianceType: musthave
                   objectDefinition:
                     apiVersion: v1
@@ -167,7 +207,7 @@ spec:
                     apiVersion: operators.coreos.com/v1
                     kind: OperatorGroup
                     metadata:
-                      name: redhat-oadp-operator-group
+                      name: {{ $operator_name }}
                       namespace: {{ $ns }}
                     spec:
                       targetNamespaces:
@@ -178,7 +218,7 @@ spec:
                     apiVersion: operators.coreos.com/v1alpha1
                     kind: Subscription
                     metadata:
-                      name: redhat-oadp-operator-subscription
+                      name: {{ $subscription_name }}
                       namespace: {{ $ns }}
                     spec:
                       channel: {{ $oadp_channel }}
