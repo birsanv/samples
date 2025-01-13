@@ -52,6 +52,10 @@ spec:
                       namespace: {{ $ns }}
                     data: '{{hub copyConfigMapData "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) hub}}'
 
+              {{hub $cron_file_name := (fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "schedule_hub_config_name") hub}}
+              {{hub $cron_file := lookup "v1" "ConfigMap" "" $cron_file_name hub}}
+              {{hub $cron_file_exists := eq $cron_file.metadata.name $cron_file_name hub}}
+              {{hub if $cron_file_exists hub}}
                 - complianceType: mustonlyhave
                   objectDefinition:
                     apiVersion: v1
@@ -59,7 +63,8 @@ spec:
                     metadata:
                       name: {{ $cron_schedule_configmap_name }}
                       namespace: {{ $ns }}
-                    data: '{{hub copyConfigMapData "" (fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "schedule_hub_config_name") hub}}'
+                    data: '{{hub copyConfigMapData "" $cron_file_name hub}}'
+              {{hub end hub}}
             {{- end }}
           remediationAction: enforce
           severity: high
@@ -92,7 +97,7 @@ spec:
 
               {{- /* if vm CRD is installed check if there are VM instances  */ -}}
               {{ if $vm_crd_exists }}
-                {{- $vms = (lookup "kubevirt.io/v1" "VirtualMachine" "" "" "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backup_label_name" hub}}").items }}
+                {{- $vms = (lookup "kubevirt.io/v1" "VirtualMachine" "" "" "cluster.open-cluster-management.io/backup-vm").items }}
                 {{- $vms_inst_exists = gt (len ($vms)) 0  }}
               {{- end }}
 
@@ -147,7 +152,7 @@ spec:
 
                 {{ if $generateSchedule }}
 
-                  {{- $schedule_label := fromConfigMap $ns "acm-virt-config-cls" "backup_label_name" }}
+                  {{- $schedule_label := "cluster.open-cluster-management.io/backup-vm" }}
                   {{- /* get all vms with a backup label  */ -}}
                   {{- $vms_to_backup := (lookup "kubevirt.io/v1" "VirtualMachine" "" "" $schedule_label) }}
 
@@ -391,7 +396,7 @@ spec:
               {{- end }}
 
               {{- $jobs_map := ( lookup "v1" "ConfigMap" $ns "acm-virt-cron-schedules" ).data }}
-              {{- $cron_label := "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backup_label_name" hub}}" }}
+              {{- $cron_label := "cluster.open-cluster-management.io/backup-vm" }}
 
               {{- /* get all vms with a backup label and check that the specified cron job name is valid  */ -}}
               {{- range $vms_to_backup := (lookup "kubevirt.io/v1" "VirtualMachine" "" "" $cron_label).items }}
@@ -399,6 +404,7 @@ spec:
                 {{- $vm_cron_value := (index $vms_to_backup.metadata.labels $cron_label) }}
                 {{if not (hasKey $jobs_map $vm_cron_value) }}
                 - complianceType: musthave
+                  recordDiff: InStatus
                   objectDefinition:
                     apiVersion: v1
                     kind: ConfigMap
@@ -406,14 +412,34 @@ spec:
                       name: "acm-virt-cron-schedules"
                       namespace: {{ $ns }}
                     data:
-                      {{ $vm_cron_value }}: "some value"
+                      {{ $vm_cron_value }}: "cron schedule used by VM {{$vms_to_backup.metadata.namespace}} {{$vms_to_backup.metadata.name}}"
                 {{- end }}
               {{- end }}
             {{- end }}
           remediationAction: inform
-          severity: low
+          severity: high
           customMessage:
-            compliant: "All schedule names used by VirtualMachines label to require backup are valid."
+            compliant: "All cron schedule names used with the VirtualMachines cluster.open-cluster-management.io/backup-vm label are valid."
             noncompliant: |-
-              Some schedule names used by the VirtualMachines to require backup are not valid.
-              Verify that all schedule names used by the VirtualMachines are defined by the policy schedule ConfigMap.
+              Some VirtualMachines use invalid cron job names for the cluster.open-cluster-management.io/backup-vm label as they are not defined by the acm-virt-cron-schedules ConfigMap.
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: check-backup-config
+        spec:
+          object-templates-raw: |
+            {{hub $cron_file_name := (fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "schedule_hub_config_name") hub}}
+            {{hub $cron_file := lookup "v1" "ConfigMap" "" $cron_file_name hub}}
+            {{hub $cron_file_exists := eq $cron_file.metadata.name $cron_file_name hub}}
+            {{hub if not $cron_file_exists hub}}
+              - complianceType: musthave
+                objectDefinition:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: {{hub $cron_file_name hub}}
+                    namespace: "open-cluster-management-backup"
+            {{hub end hub}}
+          remediationAction: inform
+          severity: high
