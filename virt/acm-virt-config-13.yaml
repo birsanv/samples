@@ -12,11 +12,11 @@ data:
   channel: stable-1.3
   # credentials_hub_secret_name is the name of the Secret resource used by the OADP DPA resource to connect to the storage location
   # hub-secret must be a Secret available under the acm-virt-config namespace. It will be copied over to the backup cluster by the policy
-  credentials_hub_secret_name: "hub-secret"
+  credentials_hub_secret_name: "cloud-credentials"
   credentials_name: "cloud-credentials"
   # only VMs with the backup_label_name label will be backed up
   backup_label_name: "cluster.open-cluster-management.io/backup-vm"
-  dpa_name: dpa-cls
+  dpa_name: velero-sample
   dpa_spec: "{
   \"backupLocations\": [
     {
@@ -50,8 +50,20 @@ data:
         \"kubevirt\",
         \"aws\"
       ],
+      \"podConfig\": {
+        \"resourceAllocations\": {
+          \"limits\": {
+            \"cpu\": \"2\",
+            \"memory\": \"1Gi\"
+          },
+          \"requests\": {
+            \"cpu\": \"500m\",
+            \"memory\": \"256Mi\"
+          }
+        }
+      }
     }
-  }
+  },
 }"
   ##### end configuration for the acm-dr-virt-install policy##
 
@@ -63,9 +75,9 @@ data:
   # you should define a ConfigMap named schedule-cron and set values such as : daily_8am: 0 8 * * *
   schedule_hub_config_name: "schedule-cron"
   ## schedule_paused - optional, see velero schedule paused property
-  schedule_paused: "true"
+  schedule_paused: "false"
   ## schedule_skipImmediately - optional, see velero skipImmediately property
-  schedule_skipImmediately: "true"
+  schedule_skipImmediately: "false"
   ## schedule_useOwnerReferencesInBackup - optional, see velero useOwnerReferencesInBackup property
   schedule_useOwnerReferencesInBackup: "true"
   ## storageLocation is an optional property, if set it should point to the velero BackupStorageLocation resource name to be used by the schedules.

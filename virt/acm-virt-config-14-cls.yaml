@@ -63,9 +63,9 @@ data:
   # you should define a ConfigMap named schedule-cron and set values such as : daily_8am: 0 8 * * *
   schedule_hub_config_name: "schedule-cron"
   ## schedule_paused - optional, see velero schedule paused property
-  schedule_paused: "true"
+  schedule_paused: "false"
   ## schedule_skipImmediately - optional, see velero skipImmediately property
-  schedule_skipImmediately: "true"
+  schedule_skipImmediately: "false"
   ## schedule_useOwnerReferencesInBackup - optional, see velero useOwnerReferencesInBackup property
   schedule_useOwnerReferencesInBackup: "true"
   ## storageLocation is an optional property, if set it should point to the velero BackupStorageLocation resource name to be used by the schedules.
