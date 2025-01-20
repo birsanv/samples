@@ -329,7 +329,7 @@ spec:
                       name: {{ $credentialsName }}
                       namespace: {{ $ns }}
                     data: '{{hub copySecretData "" $cloud_creds_file_name hub}}'
-                {{hub end hub}}
+                  {{hub end hub}}
 
                 - complianceType: musthave
                   objectDefinition:
@@ -356,12 +356,12 @@ spec:
                       source: {{ $subscriptionSource }}
                       sourceNamespace: {{ $subscriptionSourceNamespace }}
 
-                {{- /* tag the csv with the subscription uid; to be used when policy is installed and need to clean up previous policy csv - they are not cleaned up when the policy is uninstalled  */ -}}
-                {{- $installedSubs := lookup "operators.coreos.com/v1alpha1" "Subscription" $ns $subscription_name }}
+                  {{- /* tag the csv with the subscription uid; to be used when policy is installed and need to clean up previous policy csv - they are not cleaned up when the policy is uninstalled  */ -}}
+                  {{- $installedSubs := lookup "operators.coreos.com/v1alpha1" "Subscription" $ns $subscription_name }}
                   {{- $owningSubs := "cluster.open-cluster-management.io/ownSubs" }}
 
-                {{ if and (eq $installedSubs.metadata.name $subscription_name) (hasKey $installedSubs.status "installedCSV") }}
-                  {{ $csv_name := $installedSubs.status.installedCSV }}
+                  {{ if and (eq $installedSubs.metadata.name $subscription_name) (hasKey $installedSubs.status "installedCSV") }}
+                    {{ $csv_name := $installedSubs.status.installedCSV }}
                 - complianceType: musthave
                   objectDefinition:
                     apiVersion: operators.coreos.com/v1alpha1
@@ -371,13 +371,13 @@ spec:
                       namespace: {{ $ns }}
                       annotations:
                        {{ $owningSubs }}: {{ $installedSubs.metadata.uid }}
-                {{- end }}
+                  {{- end }}
 
-                {{- /* delete any csv created by a previous policy install  */ -}}
-                {{- range $csv := (lookup "operators.coreos.com/v1alpha1" "ClusterServiceVersion" "" "").items }}
-                  {{ if and (eq $csv.spec.displayName "OADP Operator") (hasKey $csv.metadata.annotations $owningSubs) }}
-                    {{- $otherOwningSubs := index $csv.metadata.annotations $owningSubs }}
-                    {{ if not (eq $otherOwningSubs $installedSubs.metadata.uid )}}
+                  {{- /* delete any csv created by a previous policy install  */ -}}
+                  {{- range $csv := (lookup "operators.coreos.com/v1alpha1" "ClusterServiceVersion" "" "").items }}
+                    {{ if and (eq $csv.spec.displayName "OADP Operator") (hasKey $csv.metadata.annotations $owningSubs) }}
+                      {{- $otherOwningSubs := index $csv.metadata.annotations $owningSubs }}
+                      {{ if not (eq $otherOwningSubs $installedSubs.metadata.uid )}}
                 - complianceType: mustnothave
                   objectDefinition:
                     apiVersion: operators.coreos.com/v1alpha1
@@ -385,15 +385,15 @@ spec:
                     metadata:
                       name: {{ $csv.metadata.name }}
                       namespace: {{ $csv.metadata.namespace }}
+                      {{- end }}
                     {{- end }}
                   {{- end }}
-                {{- end }}
 
-                {{- /* check if OADP CRD is installed  */ -}}
-                {{- $dpa_crd_name := "dataprotectionapplications.oadp.openshift.io" }}
-                {{- $dpa_crd := lookup "apiextensions.k8s.io/v1" "CustomResourceDefinition" "" "dataprotectionapplications.oadp.openshift.io"  }}
-                {{- $dpa_crd_exists := eq $dpa_crd.metadata.name  $dpa_crd_name }}
-                  {{- if $dpa_crd_exists }}
+                  {{- /* check if OADP CRD is installed  */ -}}
+                  {{- $dpa_crd_name := "dataprotectionapplications.oadp.openshift.io" }}
+                  {{- $dpa_crd := lookup "apiextensions.k8s.io/v1" "CustomResourceDefinition" "" "dataprotectionapplications.oadp.openshift.io"  }}
+                  {{- $dpa_crd_exists := eq $dpa_crd.metadata.name  $dpa_crd_name }}
+                  {{- if and {{hub $cloud_creds_file_exists hub}} $dpa_crd_exists }}
                 - complianceType: mustonlyhave
                   objectDefinition:
                     apiVersion: oadp.openshift.io/v1alpha1
