@@ -41,6 +41,9 @@ spec:
                 {{- $ns = "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backupNS" hub}}" }}
               {{- end }}
 
+              {{- /* for managed clusters and hub, copy user created cron schedule yaml to the OADP namespace and name it acm-virt-cron-schedules  */ -}}
+              {{- /* for managed clusters and hub, copy user created acm-virt-config yaml to the OADP namespace and name it acm-virt-config-cls  */ -}}
+              {{- /* this simplifies config search on managed clusters, since it removes the need to access it from the hub  */ -}}
               {{- /* cron_schedule_configmap_name is the name of the main cron config map, copied over to the cluster  */ -}}
               {{- $cron_schedule_configmap_name := "acm-virt-cron-schedules" }}
 
@@ -442,5 +445,7 @@ spec:
                     name: {{hub $cron_file_name hub}}
                     namespace: "open-cluster-management-backup"
             {{hub end hub}}
+          customMessage:
+            compliant: "The ConfigMap defined by the schedule_hub_config_name property exists on the hub, under the open-cluster-management-backup namespace."
           remediationAction: inform
           severity: high
