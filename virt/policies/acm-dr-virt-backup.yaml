@@ -87,9 +87,6 @@ spec:
                         {{- $ns = "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backupNS" hub}}" }}
                       {{- end }}
                     {{hub end hub}}
-                    {{ if not $is_hub }}
-                      {{- $ns = "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backupNS" hub}}" }}
-                    {{- end}}
 
                     {{- $config_map := lookup "v1" "ConfigMap" $ns "acm-virt-config-cls" }}
                     {{ if hasKey $config_map.data "scheduleTTL" }}
