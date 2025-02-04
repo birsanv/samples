@@ -83,7 +83,6 @@ spec:
           remediationAction: inform
           severity: high
           object-templates-raw: |
-            {{- /* check if there is an OADP version installed on the cluster and it matches the version installed by the policy  */ -}}
             {{hub $config_name := index .ManagedClusterLabels "acm-virt-config" hub}}
             {{hub $config_file := lookup "v1" "ConfigMap" "" $config_name hub}}
             {{hub $config_file_exists := eq $config_file.metadata.name $config_name hub}}
