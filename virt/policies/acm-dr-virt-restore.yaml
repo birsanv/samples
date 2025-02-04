@@ -68,8 +68,9 @@ spec:
 
             {{- /* check if install policy is compliant */ -}}
             {{- $policy_install_compliant := "false" }}
+            {{- $cluster_name := "{{hub .ManagedClusterName hub}}" }}
             {{- $policy_label := "policy.open-cluster-management.io/root-policy, policy.open-cluster-management.io/root-policy in (open-cluster-management-backup.acm-dr-virt-install)"}}
-            {{- range $policy_install := (lookup "policy.open-cluster-management.io/v1" "Policy" "" "" $policy_label).items }}
+            {{- range $policy_install := (lookup "policy.open-cluster-management.io/v1" "Policy" "$cluster_name" "" $policy_label).items }}
               {{- $policy_install_compliant = eq $policy_install.status.compliant "Compliant" }}
             {{- end }}
 
