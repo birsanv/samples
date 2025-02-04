@@ -214,15 +214,15 @@ spec:
                 {{- $restore_exists := and (not (eq "" $restoreName)) (eq (lookup "velero.io/v1" "Restore" $ns $restoreName).metadata.name $restoreName) }}
                 {{ if $restore_exists }}
 
-            - complianceType: musthave
-              objectDefinition:
-                apiVersion: velero.io/v1
-                kind: Restore
-                metadata:
-                  name: {{ $restoreName }}
-                  namespace: {{ $ns }}
-                status:
-                  phase: Completed
+                - complianceType: musthave
+                  objectDefinition:
+                    apiVersion: velero.io/v1
+                    kind: Restore
+                    metadata:
+                      name: {{ $restoreName }}
+                      namespace: {{ $ns }}
+                    status:
+                      phase: Completed
                   {{- end }}
                 {{- end }}
               {{hub end hub}}
