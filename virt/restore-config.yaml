@@ -3,3 +3,7 @@ kind: ConfigMap
 metadata:
   name: restore-config
 data:
+ a0cb1454-6e38-40eb-a666-ee71556b4e33_backupName: acm-rho-virt-schedule-now-20250416145645
+ a0cb1454-6e38-40eb-a666-ee71556b4e33_restoreName: restore-acm-rho-virt-schedule-now-20250416145645
+ a0cb1454-6e38-40eb-a666-ee71556b4e33_vmsUID: d49d5f8e-ab77-479e-8d68-3af4901ccee5 vmUID2
+ a0cb1454-6e38-40eb-a666-ee71556b4e33_namespaceMapping: default=vm-ns old-ns-2=new-ns-2
