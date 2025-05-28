@@ -99,8 +99,11 @@ spec:
 
                     {{- range $jobs := $jobs_map.data }}
 
-                      {{- /* pvcs_ns gives the list of all namespaces where PVC exist  */ -}}
+                      {{- /* pvcs_ns gives the list of all namespaces for these PVCs  */ -}}
                       {{ $pvcs_ns := " " }}
+                      {{- /* app_names gives the list of all app names owning this PVCs, using app.kubernetes.io/part-of */ -}}
+                      {{ $app_names := " " }}
+
                       {{- $acm_pv_sch_name_cron := "" }}
 
                       {{- /* go through all pvc with a backup label and process only the ones with the same cron job as the one in current iteration */ -}}
@@ -121,6 +124,12 @@ spec:
                             {{- /* add PVC namespace if not already in the pvcs_ns  */ -}}
                             {{- $pvcs_ns = (cat $pvcs_ns $pvcs.metadata.namespace " ") }}
                           {{- end }}
+                          {{- $owning_app_name := "" }}
+                          {{- $owning_app_name = (index $pvcs.metadata.labels "app.kubernetes.io/part-of") }}
+                          {{ if and (not (eq $owning_app_name "")) (not (contains $owning_app_name $app_names)) }}
+                            {{- /* add app name if not already in the app_names  */ -}}
+                            {{- $app_names = (cat $app_names $owning_app_name " ") }}
+                          {{- end }}
                         {{- end }}
                       {{- end }}
 
@@ -139,7 +148,7 @@ spec:
                         spec:
                           paused: {{ $paused_schedule }}
                           schedule: {{ $jobs }}
-                          {{ if and $paused_schedule (not ( (hasPrefix "stable-1.3" $oadp_channel)) )}}
+                          {{ if and (not $paused_schedule) (not ( (hasPrefix "stable-1.3" $oadp_channel)) )}}
                           skipImmediately: {{ $skipImmediately }}
                           {{- end }}
                           useOwnerReferencesInBackup: {{ $useOwnerReferencesInBackup }}
@@ -155,6 +164,18 @@ spec:
                               {{- end }}
                             {{ if not (eq "" $storageLocation) }}
                             storageLocation: "{{ $storageLocation }}"
+                            {{- end }}
+                            {{ if not (eq $app_names "") }}
+                            orLabelSelectors:
+                              - matchExpressions:
+                                  - values:
+                                    {{- range $app_name := split " " $app_names }}
+                                      {{ if not (eq $app_name "") }}
+                                    - {{ $app_name }}
+                                      {{- end }}
+                                    {{- end }}
+                                    key: app.kubernetes.io/part-of
+                                    operator: In
                             {{- end }}
                       {{- /* there are PVC resources */ -}}
                       {{- end }}
