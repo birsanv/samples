@@ -38,7 +38,7 @@ spec:
               {{ if and $sch_crd_exists $cron_file_exists }}
                 {{- /* ns is the namespace for the OADP deployment  */ -}}
                 {{- $ns := "open-cluster-management-backup" }}
-                {{- $acm_pv_sch_name := "acm-rho-pv-schedule" }}
+                {{- $acm_pv_sch_name := "" }}
 
                 {{- /* true if there are any PVC instances  */ -}}
                 {{- $pvcs := (lookup "v1" "PersistentVolumeClaim" "" "" "cluster.open-cluster-management.io/backup-pvc").items }}
@@ -113,6 +113,8 @@ spec:
                         {{- $cron_name := (index $pvcs.metadata.labels $schedule_label) }}
 
                         {{- $cron_schedule = fromConfigMap $ns "acm-dr-virt-schedule-cron--cls" $cron_name }}
+                        {{- $owning_app_name := (index $pvcs.metadata.labels "app.kubernetes.io/part-of") }}
+                        {{- $acm_pv_sch_name = $owning_app_name }}
 
                         {{ if eq $cron_schedule $jobs }}
 
@@ -124,8 +126,6 @@ spec:
                             {{- /* add PVC namespace if not already in the pvcs_ns  */ -}}
                             {{- $pvcs_ns = (cat $pvcs_ns $pvcs.metadata.namespace " ") }}
                           {{- end }}
-                          {{- $owning_app_name := "" }}
-                          {{- $owning_app_name = (index $pvcs.metadata.labels "app.kubernetes.io/part-of") }}
                           {{ if and (not (eq $owning_app_name "")) (not (contains $owning_app_name $app_names)) }}
                             {{- /* add app name if not already in the app_names  */ -}}
                             {{- $app_names = (cat $app_names $owning_app_name " ") }}
