@@ -112,9 +112,12 @@ spec:
                         {{- /* get the name of the cron job from the pvc label  */ -}}
                         {{- $cron_name := (index $pvcs.metadata.labels $schedule_label) }}
 
+                        {{- $acm_pv_sch_name = $pvcs.metadata.name }}
                         {{- $cron_schedule = fromConfigMap $ns "acm-dr-virt-schedule-cron--cls" $cron_name }}
                         {{- $owning_app_name := (index $pvcs.metadata.labels "app.kubernetes.io/part-of") }}
-                        {{- $acm_pv_sch_name = $owning_app_name }}
+                        {{ if and (not (eq $owning_app_name ""))
+                          {{- $acm_pv_sch_name = $owning_app_name }}
+                        {{- end }}
 
                         {{ if eq $cron_schedule $jobs }}
 
