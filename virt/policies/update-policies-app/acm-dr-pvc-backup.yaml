@@ -1,0 +1,358 @@
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: acm-dr-pvc-backup
+  namespace: open-cluster-management-backup
+  annotations:
+    policy.open-cluster-management.io/categories: CA Security Assessment and Authorization
+    policy.open-cluster-management.io/controls: CA-2 Security Assessments, CA-7 Continuous Monitoring
+    policy.open-cluster-management.io/standards: NIST SP 800-53
+    policy.open-cluster-management.io/description: |-
+      Policy is placed on hub or managed clusters with label acm-virt-config=acm-dr-virt-config-file-name.
+      Creates a velero Schedule for all pv resources with a cluster.open-cluster-management.io/backup-pvc label.
+spec:
+  disabled: false
+  policy-templates:                                                                                                                                           
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: create-pvc-backup
+        spec:
+          object-templates-raw: |
+            {{- /* check if velero is installed  */ -}}
+            {{- $sch_crd_name := "schedules.velero.io" }}
+            {{- $sch_crd := lookup "apiextensions.k8s.io/v1" "CustomResourceDefinition" "" $sch_crd_name  }}
+            {{- $sch_crd_exists := eq $sch_crd.metadata.name  $sch_crd_name }}
+            {{- $schedule_label := "cluster.open-cluster-management.io/backup-pvc" }}
+
+            {{ if ($sch_crd_exists) }}
+              {{hub $config_name := index .ManagedClusterLabels "acm-virt-config" hub}}
+              {{hub $config_file := lookup "v1" "ConfigMap" "" $config_name hub}}
+              {{hub $config_file_exists := eq $config_file.metadata.name $config_name hub}}
+              {{- /* check if app_config configMap exists */ -}}
+              {{hub $app_config_name := (fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "app_config_name") hub}}
+              {{hub $app_config_file := lookup "v1" "ConfigMap" "" $app_config_name hub}}
+              {{- $app_config_file_exists := {{hub eq $app_config_file.metadata.name $app_config_name hub}} }}
+
+              {{ if and $app_config_file_exists }}
+              {{- end }}
+
+            {{- end }}
+
+            {{hub $config_name := index .ManagedClusterLabels "acm-virt-config" hub}}
+            {{hub $config_file := lookup "v1" "ConfigMap" "" $config_name hub}}
+            {{hub $config_file_exists := eq $config_file.metadata.name $config_name hub}}
+            {{hub if $config_file_exists hub}}
+              {{- /* check if schedule_hub_config_name configMap exists */ -}}
+              {{hub $cron_file_name := (fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "schedule_hub_config_name") hub}}
+              {{hub $cron_file := lookup "v1" "ConfigMap" "" $cron_file_name hub}}
+              {{- $cron_file_exists := {{hub eq $cron_file.metadata.name $cron_file_name hub}} }}
+
+              {{ if and $sch_crd_exists $cron_file_exists }}
+                {{- /* ns is the namespace for the OADP deployment  */ -}}
+                {{- $ns := "open-cluster-management-backup" }}
+                {{- $acm_pv_sch_name := "" }}
+
+                {{- /* true if there are any PVC instances  */ -}}
+                {{- $pvcs := (lookup "v1" "PersistentVolumeClaim" "" "" "cluster.open-cluster-management.io/backup-pvc").items }}
+                {{- $pvcs_inst_exists := gt (len ($pvcs)) 0  }}
+
+                {{- $generateSchedule := $pvcs_inst_exists }}
+                {{- /* keep track of schedules created as a result of pvc annotations; any schedule not in this list must be deleted  */ -}}
+                {{- $valid_schedules := "=" }}
+                {{- /* if there are any pvc instances  */ -}}
+                {{ if $pvcs_inst_exists }}
+                  {{- $cron_schedule := "10 */1 * * *" }}
+                  {{- $ttl_schedule := "24h0m0s" }}
+                  {{- $paused_schedule := false }}
+
+                  {{- /* check if this is a hub, acm installed  */ -}}
+                  {{- $acm_crd_name := "multiclusterhubs.operator.open-cluster-management.io" }}
+                  {{- $acm_crd := lookup "apiextensions.k8s.io/v1" "CustomResourceDefinition" "" $acm_crd_name  }}
+                  {{- $is_hub := eq $acm_crd.metadata.name  $acm_crd_name }}
+                  {{- $skipImmediately := false }}
+                  {{- $useOwnerReferencesInBackup := false }}
+
+                  {{- /* check if OADP CRD is installed  */ -}}
+                  {{- $dpa_crd_name := "dataprotectionapplications.oadp.openshift.io" }}
+                  {{- $dpa_crd := lookup "apiextensions.k8s.io/v1" "CustomResourceDefinition" "" "dataprotectionapplications.oadp.openshift.io"  }}
+                  {{- $dpa_crd_exists := eq $dpa_crd.metadata.name  $dpa_crd_name }}
+                  {{- $storageLocation := "" }}
+
+                  {{- $oadp_channel := "" }}
+                  {{ if ($sch_crd_exists) }}
+                    {{- /* Velero Schedule CRD is installed */ -}}
+                    {{ if not $is_hub }}
+                      {{- $ns = "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backupNS" hub}}" }}
+                    {{- end }}
+
+                    {{- $config_map := lookup "v1" "ConfigMap" $ns "acm-dr-virt-config--cls" }}
+                    {{ if hasKey $config_map.data "scheduleTTL" }}
+                    {{- $ttl_schedule = $config_map.data.scheduleTTL }}
+                    {{- end }}
+                    {{ if hasKey $config_map.data "schedule_paused" }}
+                      {{- $paused_schedule = ($config_map.data.schedule_paused) | toBool }}
+                    {{- end }}
+                    {{ if hasKey $config_map.data "schedule_skipImmediately" }}
+                      {{- $skipImmediately = ( $config_map.data.schedule_skipImmediately ) | toBool }}
+                    {{- end }}
+                    {{ if hasKey $config_map.data "schedule_useOwnerReferencesInBackup" }}
+                      {{- $useOwnerReferencesInBackup = ( $config_map.data.schedule_useOwnerReferencesInBackup ) | toBool }}
+                    {{- end }}
+                    {{- $storageLocation = fromConfigMap $ns "acm-dr-virt-config--cls" "storageLocation" }}
+
+                  {{- /* Velero Schedule CRD is installed */ -}}
+                  {{- end }}
+
+                  {{ if $generateSchedule }}
+
+                    {{- /* get all cron jobs; for each of them define a backup schedule, if any pvc are found for this schedule  */ -}}
+                    {{- $jobs_map := ( lookup "v1" "ConfigMap" $ns "acm-dr-virt-schedule-cron--cls" ) }}
+
+                    {{- range $jobs := $jobs_map.data }}
+
+                      {{- /* pvcs_ns gives the list of all namespaces for these PVCs  */ -}}
+                      {{ $pvcs_ns := " " }}
+                      {{- /* app_names gives the list of all app names owning this PVCs, using app.kubernetes.io/part-of */ -}}
+                      {{ $app_names := " " }}
+
+                      {{- $acm_pv_sch_name_cron := "" }}
+
+                      {{- /* go through all pvc with a backup label and process only the ones with the same cron job as the one in current iteration */ -}}
+                      {{- range $pvcs := (lookup "v1" "PersistentVolumeClaim" "" "" "cluster.open-cluster-management.io/backup-pvc").items }}
+
+                        {{- /* get the name of the cron job from the pvc label  */ -}}
+                        {{- $cron_name := (index $pvcs.metadata.labels $schedule_label) }}
+
+                        {{- $cron_schedule = fromConfigMap $ns "acm-dr-virt-schedule-cron--cls" $cron_name }}
+                        {{- $owning_app_name := (index $pvcs.metadata.labels "app.kubernetes.io/part-of") }}
+                        {{- $acm_pv_sch_name = $owning_app_name }}
+
+                        {{ if eq $cron_schedule $jobs }}
+
+                          {{- /* get the value of the cron from the cron schedule config map  */ -}}
+                          {{- /* create a schedule name using the cron name  */ -}}
+                          {{- $acm_pv_sch_name_cron = ((cat $acm_pv_sch_name $cron_name) | replace "_" "-") | replace " " "-" }}
+
+                          {{ if not (contains $pvcs.metadata.namespace $pvcs_ns) }}
+                            {{- /* add PVC namespace if not already in the pvcs_ns  */ -}}
+                            {{- $pvcs_ns = (cat $pvcs_ns $pvcs.metadata.namespace " ") }}
+                          {{- end }}
+                          {{ if and (not (eq $owning_app_name "")) (not (contains $owning_app_name $app_names)) }}
+                            {{- /* add app name if not already in the app_names  */ -}}
+                            {{- $app_names = (cat $app_names $owning_app_name " ") }}
+                          {{- end }}
+                        {{- end }}
+                      {{- end }}
+
+                    {{ if (not (eq $pvcs_ns " ")) }}
+                      {{- $valid_schedules = (cat $valid_schedules $acm_pv_sch_name_cron "=") | replace " " "" }}
+                    - complianceType: mustonlyhave
+                      objectDefinition:
+                        apiVersion: velero.io/v1
+                        kind: Schedule
+                        metadata:
+                          name: {{ $acm_pv_sch_name_cron }}
+                          namespace: {{ $ns }}
+                          labels:
+                            cluster.open-cluster-management.io/backup-cluster: {{ fromClusterClaim "id.openshift.io" }}
+                            cluster.open-cluster-management.io/backup-schedule-type: app
+                        spec:
+                          paused: {{ $paused_schedule }}
+                          schedule: {{ $jobs }}
+                          {{ if not $paused_schedule }}
+                          skipImmediately: {{ $skipImmediately }}
+                          {{- end }}
+                          useOwnerReferencesInBackup: {{ $useOwnerReferencesInBackup }}
+                          template:
+                            ttl: {{ $ttl_schedule }}
+                            snapshotMoveData: true
+                            defaultVolumesToFsBackup: false
+                            includedNamespaces:
+                              {{- range $pvc_namespace := split " " $pvcs_ns }}
+                              {{ if not (eq $pvc_namespace "") }}
+                              - {{ $pvc_namespace }}
+                              {{- end }}
+                              {{- end }}
+                            {{ if not (eq "" $storageLocation) }}
+                            storageLocation: "{{ $storageLocation }}"
+                            {{- end }}
+                            {{ if not (eq $app_names "") }}
+                            orLabelSelectors:
+                              - matchExpressions:
+                                  - values:
+                                    {{- range $app_name := split " " $app_names }}
+                                      {{ if not (eq $app_name "") }}
+                                    - {{ $app_name }}
+                                      {{- end }}
+                                    {{- end }}
+                                    key: app.kubernetes.io/part-of
+                                    operator: In
+                            {{- end }}
+                      {{- /* there are PVC resources */ -}}
+                      {{- end }}
+                    {{- /* end query cron schedules */ -}}
+                    {{- end }}
+                  {{- /* generateSchedule is true */ -}}
+                  {{- end}}
+                {{- end}}
+
+                {{- /* clean old schedules  */ -}}
+                {{- $schedule_label := "cluster.open-cluster-management.io/backup-schedule-type, cluster.open-cluster-management.io/backup-schedule-type in (app)"}}
+                {{- range $scheduleObj := (lookup "velero.io/v1" "Schedule" "" ""  $schedule_label).items }}
+
+                  {{- $search_str := (cat "=" $scheduleObj.metadata.name "=") | replace " " ""}}
+                  {{ if not (contains $search_str $valid_schedules) }}
+                    - complianceType: mustnothave
+                      objectDefinition:
+                        apiVersion: velero.io/v1
+                        kind: Schedule
+                        metadata:
+                          namespace: {{ $scheduleObj.metadata.namespace }}
+                          name: {{ $scheduleObj.metadata.name }}
+                  {{- end }}
+                {{- end }}
+              {{- end }}
+            {{hub end hub}}
+          remediationAction: enforce
+          pruneObjectBehavior: DeleteIfCreated
+          severity: high
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: check-pv-backup-status-completed
+        spec:
+          object-templates-raw: |
+            {{- $schedule_label := "cluster.open-cluster-management.io/backup-schedule-type, cluster.open-cluster-management.io/backup-schedule-type in (app)"}}
+
+            {{- $sch_crd_name := "schedules.velero.io" }}
+            {{- $sch_crd := lookup "apiextensions.k8s.io/v1" "CustomResourceDefinition" "" $sch_crd_name  }}
+            {{- $sch_crd_exists := eq $sch_crd.metadata.name  $sch_crd_name }}
+
+            {{ if $sch_crd_exists }}
+
+              {{- /* if schedule exists, get the last generated backup and verify the status is Completed  */ -}}
+              {{- range $scheduleObj := (lookup "velero.io/v1" "Schedule" "" ""  $schedule_label).items }}
+
+                {{- $is_paused := and (hasKey $scheduleObj.spec "paused") $scheduleObj.spec.paused }}
+
+                {{if not $is_paused }}
+                  {{- $scheduleObjLastBckTime := "" }}
+                  {{ if and $scheduleObj.status (hasKey $scheduleObj.status "lastBackup") }}
+                    {{- $scheduleObjLastBckTime = (index $scheduleObj.status "lastBackup") }}
+                  {{- end }}
+
+                - complianceType: musthave
+                  objectDefinition:
+                    apiVersion: velero.io/v1
+                    kind: Schedule
+                    metadata:
+                      namespace: {{ $scheduleObj.metadata.namespace }}
+                      name: {{ $scheduleObj.metadata.name }}
+                      labels:
+                        cluster.open-cluster-management.io/backup-schedule-type: app
+                    status:
+                      phase: Enabled
+
+                  {{ if not (eq $scheduleObjLastBckTime "") }}
+                    {{- /* get only backups created by this cluster  */ -}}
+                    {{- $cluster_version := fromClusterClaim "id.openshift.io" }}
+                    {{- $backup_label := "schedule_label_tmp, cluster.open-cluster-management.io/backup-cluster, cluster.open-cluster-management.io/backup-cluster in (cluster_version_tmp)"}}
+                    {{- $backup_label = replace "schedule_label_tmp" $schedule_label $backup_label }}
+                    {{- $backup_label = replace "cluster_version_tmp" $cluster_version $backup_label }}
+                    {{- range $backupList := (lookup "velero.io/v1" "Backup" "" "" $backup_label).items }}
+                      {{- $backupCreation := $backupList.metadata.creationTimestamp  }}
+                      {{ if eq $backupCreation $scheduleObjLastBckTime }}
+
+                        {{- $data_upload_label := "velero.io/backup-name, velero.io/backup-name in (aa)" }}
+                        {{- $data_upload_label = replace "aa" $backupList.metadata.name $data_upload_label }}
+
+                        {{- range $dataupload_obj :=  (lookup "velero.io/v2alpha1" "DataUpload" $backupList.metadata.namespace "" $data_upload_label ).items }}
+
+                - complianceType: musthave
+                  objectDefinition:
+                    apiVersion: velero.io/v2alpha1
+                    kind: DataUpload
+                    metadata:
+                      namespace: {{ $backupList.metadata.namespace }}
+                      name: {{ $dataupload_obj.metadata.name }}
+                      labels:
+                        velero.io/backup-name: {{ $backupList.metadata.name }}
+                    status:
+                      phase: Completed
+                        {{- end }}
+
+                - complianceType: musthave
+                  objectDefinition:
+                    apiVersion: velero.io/v1
+                    kind: Backup
+                    metadata:
+                      namespace: {{ $backupList.metadata.namespace }}
+                      name: {{ $backupList.metadata.name }}
+                      labels:
+                        cluster.open-cluster-management.io/backup-cluster: {{ $cluster_version }}
+                        cluster.open-cluster-management.io/backup-schedule-type: app
+                        velero.io/schedule-name: {{ $scheduleObj.metadata.name }}
+                    status:
+                      phase: Completed
+                      {{- end }}
+                    {{- end }}
+                  {{- end }}
+                {{- end }}
+              {{- end }}
+            {{- end }}
+
+          remediationAction: inform
+          severity: low  
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: check-pv-cron-schedule-valid
+        spec:
+          object-templates-raw: |
+            {{hub $config_name := index .ManagedClusterLabels "acm-virt-config" hub}}
+            {{hub $config_file := lookup "v1" "ConfigMap" "" $config_name hub}}
+            {{hub $config_file_exists := eq $config_file.metadata.name $config_name hub}}
+
+            {{hub if $config_file_exists hub}}
+
+              {{- /* ns is the namespace for the OADP deployment  */ -}}
+              {{- $ns := "open-cluster-management-backup" }}
+
+              {{- /* check if this is a hub, acm installed  */ -}}
+              {{- $acm_crd_name := "multiclusterhubs.operator.open-cluster-management.io" }}
+              {{- $acm_crd := lookup "apiextensions.k8s.io/v1" "CustomResourceDefinition" "" $acm_crd_name  }}
+              {{- $is_hub := eq $acm_crd.metadata.name  $acm_crd_name }}
+              {{ if not $is_hub }}
+                {{- $ns = "{{hub fromConfigMap "" (printf "%s" (index .ManagedClusterLabels "acm-virt-config")) "backupNS" hub}}" }}
+              {{- end }}
+
+              {{- $jobs_map := ( lookup "v1" "ConfigMap" $ns "acm-dr-virt-schedule-cron--cls" ).data }}
+              {{- $cron_label := "cluster.open-cluster-management.io/backup-pvc" }}
+
+              {{- /* get all pvc with a backup label and check that the specified cron job name is valid  */ -}}
+              {{- range $pvcs_to_backup := (lookup "v1" "PersistentVolumeClaim" "" "" "cluster.open-cluster-management.io/backup-pvc").items }}
+                {{- $pvc_cron_value := (index $pvcs_to_backup.metadata.labels $cron_label) }}
+                {{if not (hasKey $jobs_map $pvc_cron_value) }}
+              - complianceType: musthave
+                recordDiff: InStatus
+                objectDefinition:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: "acm-dr-virt-schedule-cron--cls"
+                    namespace: {{ $ns }}
+                  data:
+                    {{ $pvc_cron_value }}: {{$pvcs_to_backup.metadata.name}}
+                {{- end }}
+              {{- end }}
+            {{hub end hub}}
+          remediationAction: inform
+          severity: high
+          customMessage:
+            compliant: "All cron schedule names used with the PVC cluster.open-cluster-management.io/backup-pvc label are valid."
+            noncompliant: |-
+              Some PVC use invalid cron job names for the cluster.open-cluster-management.io/backup-pvc label as they are not defined by the acm-dr-virt-schedule-cron--cls ConfigMap.
