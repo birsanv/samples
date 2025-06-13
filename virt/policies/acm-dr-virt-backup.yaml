@@ -271,7 +271,7 @@ spec:
                         {{- $data_upload_label := "velero.io/backup-name, velero.io/backup-name in (aa)" }}
                         {{- $data_upload_label = replace "aa" $backupList.metadata.name $data_upload_label }}
 
-                        {{- range $dataupload_obj :=  (lookup "velero.io/v2alpha1" "DataUpload" "$backupList.metadata.namespace" "" $data_upload_label ).items }}
+                        {{- range $dataupload_obj :=  (lookup "velero.io/v2alpha1" "DataUpload" $backupList.metadata.namespace "" $data_upload_label ).items }}
                 - complianceType: musthave
                   objectDefinition:
                     apiVersion: velero.io/v2alpha1
