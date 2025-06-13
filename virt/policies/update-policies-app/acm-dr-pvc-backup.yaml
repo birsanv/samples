@@ -124,25 +124,15 @@ spec:
 
                         {{- /* get the name of the cron job from the pvc label  */ -}}
                         {{- $cron_name := (index $pvcs.metadata.labels $schedule_label) }}
-
                         {{- $cron_schedule = fromConfigMap $ns "acm-dr-virt-schedule-cron--cls" $cron_name }}
-                        {{- $owning_app_name := (index $pvcs.metadata.labels "app.kubernetes.io/part-of") }}
-                        {{- $acm_pv_sch_name = $owning_app_name }}
 
                         {{ if eq $cron_schedule $jobs }}
-
                           {{- /* get the value of the cron from the cron schedule config map  */ -}}
                           {{- /* create a schedule name using the cron name  */ -}}
-                          {{- $acm_pv_sch_name_cron = ((cat $acm_pv_sch_name $cron_name) | replace "_" "-") | replace " " "-" }}
+                          {{- $acm_pv_sch_name_cron = ((cat "acm-app" $cron_name) | replace "_" "-") | replace " " "-" }}
 
-                          {{ if not (contains $pvcs.metadata.namespace $pvcs_ns) }}
-                            {{- /* add PVC namespace if not already in the pvcs_ns  */ -}}
-                            {{- $pvcs_ns = (cat $pvcs_ns $pvcs.metadata.namespace " ") }}
-                          {{- end }}
-                          {{ if and (not (eq $owning_app_name "")) (not (contains $owning_app_name $app_names)) }}
-                            {{- /* add app name if not already in the app_names  */ -}}
-                            {{- $app_names = (cat $app_names $owning_app_name " ") }}
-                          {{- end }}
+                          {{- $pvcs_ns = (cat $pvcs_ns $pvcs.metadata.namespace " ") }}
+                          {{- $app_names = (cat $app_names (index $pvcs.metadata.labels "app.kubernetes.io/part-of") " ") }}
                         {{- end }}
                       {{- end }}
 
