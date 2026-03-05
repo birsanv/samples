@@ -2,10 +2,36 @@
 
 Diagnose the ACM (Advanced Cluster Management) backup/restore configuration on the currently connected OpenShift cluster.
 
-## Quick Start
+## Installation
+
+This skill works with **Claude Code**, **Cursor**, or standalone.
+
+### Claude Code
+
+Copy or symlink the `assess-acm-backup-config/` directory into one of these locations:
+
+| Scope | Path |
+|-------|------|
+| Personal (all projects) | `~/.claude/skills/assess-acm-backup-config/` |
+| Project-only | `.claude/skills/assess-acm-backup-config/` |
+
+Then invoke with `/assess-acm-backup-config` or let Claude load it automatically when you ask about ACM backup status.
+
+### Cursor
+
+Copy or symlink the `assess-acm-backup-config/` directory into:
+
+| Scope | Path |
+|-------|------|
+| Personal (all projects) | `~/.cursor/skills/assess-acm-backup-config/` |
+| Project-only | `.cursor/skills/assess-acm-backup-config/` |
+
+Cursor will discover the skill from the `SKILL.md` frontmatter.
+
+### Standalone (no AI tool)
 
 ```bash
-bash hack/assess-acm-backup-config/scripts/assess-backup-config.sh
+bash assess-acm-backup-config/scripts/assess-backup-config.sh
 ```
 
 The script requires `oc` CLI logged in to an OpenShift cluster with ACM installed.

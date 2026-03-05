@@ -1,6 +1,7 @@
 ---
 name: assess-acm-backup-config
 description: Assess whether the current OpenShift cluster is in an ACM active-passive backup configuration. Detects backup schedules, passive restores, active hub identity, and validation cron status. Use when the user asks about ACM backup status, active-passive config, which hub is active, or backup health.
+allowed-tools: Bash, Shell, Read, Grep, Glob
 ---
 
 # Assess ACM Backup Configuration
@@ -9,7 +10,15 @@ Diagnose the ACM (Advanced Cluster Management) backup/restore configuration on t
 
 ## Quick Start
 
-Run the diagnostic script:
+Run the diagnostic script. The script path depends on the AI tool:
+
+**Claude Code:**
+
+```bash
+bash ${CLAUDE_SKILL_DIR}/scripts/assess-backup-config.sh
+```
+
+**Cursor:**
 
 ```bash
 bash <skill-dir>/scripts/assess-backup-config.sh
