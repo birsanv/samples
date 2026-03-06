@@ -31,10 +31,16 @@ Cursor will discover the skill from the `SKILL.md` frontmatter.
 ### Standalone (no AI tool)
 
 ```bash
+# Assess a specific cluster context
+bash assess-acm-backup-config/scripts/assess-backup-config.sh vb-hub-a
+
+# Or use the current kubeconfig context
 bash assess-acm-backup-config/scripts/assess-backup-config.sh
 ```
 
-The script requires `oc` CLI logged in to an OpenShift cluster with ACM installed.
+The script accepts an optional cluster context name (positional or `--context <name>`). If omitted, it uses the current kubeconfig context. The context must match an entry from `oc config get-contexts`.
+
+The script requires `oc` CLI and a valid kubeconfig context for an OpenShift cluster with ACM installed.
 
 ## What It Detects
 

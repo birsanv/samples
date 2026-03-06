@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # ACM Backup Configuration Assessment Script
 # Requires: oc (logged in to an OpenShift cluster with ACM installed)
+#
+# Usage: assess-backup-config.sh [--context <name>] [<context>]
+#   --context <name>   Use the specified kubeconfig context
+#   <context>          Positional shorthand for --context
+#   (no argument)      Use the current kubeconfig context
 set -euo pipefail
 
 NS="open-cluster-management-backup"
@@ -10,6 +15,41 @@ YELLOW="\033[33m"
 RED="\033[31m"
 CYAN="\033[36m"
 RESET="\033[0m"
+
+# --- Parse arguments ---
+CTX=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --context)
+      CTX="$2"; shift 2 ;;
+    --context=*)
+      CTX="${1#--context=}"; shift ;;
+    -h|--help)
+      printf "Usage: %s [--context <name>] [<context>]\n" "$(basename "$0")"
+      printf "  --context <name>   kubeconfig context to use\n"
+      printf "  <context>          positional shorthand for --context\n"
+      printf "  (no argument)      use current kubeconfig context\n"
+      exit 0 ;;
+    *)
+      CTX="$1"; shift ;;
+  esac
+done
+
+# Build the oc context flag used for every oc invocation
+OC_CTX=()
+if [[ -n "$CTX" ]]; then
+  OC_CTX=(--context "$CTX")
+fi
+
+# Wrapper so every oc call uses the chosen context
+run_oc() { oc "${OC_CTX[@]}" "$@"; }
+
+# String form for use inside eval'd command strings
+if [[ -n "$CTX" ]]; then
+  OC="oc --context $CTX"
+else
+  OC="oc"
+fi
 
 header() { printf "\n${BOLD}${CYAN}=== %s ===${RESET}\n" "$1"; }
 info()   { printf "${GREEN}[OK]${RESET} %s\n" "$1"; }
@@ -32,17 +72,26 @@ if ! command -v oc &>/dev/null; then
   err "oc CLI not found"; exit 1
 fi
 
-if ! oc whoami &>/dev/null; then
-  err "Not logged in to an OpenShift cluster"; exit 1
+if ! run_oc whoami &>/dev/null; then
+  if [[ -n "$CTX" ]]; then
+    err "Cannot connect using context '$CTX' -- check that it exists and is logged in"
+  else
+    err "Not logged in to an OpenShift cluster"
+  fi
+  exit 1
 fi
 
-CLUSTER_NAME=$(oc config current-context 2>/dev/null || echo "unknown")
+if [[ -n "$CTX" ]]; then
+  CLUSTER_NAME="$CTX"
+else
+  CLUSTER_NAME=$(oc config current-context 2>/dev/null || echo "unknown")
+fi
 printf "Cluster context: %s\n" "$CLUSTER_NAME"
 
 # --- 1. This cluster's identity ---
 header "1. Cluster Identity"
 
-CLUSTER_ID=$(oc get clusterversion version -o jsonpath='{.spec.clusterID}' 2>/dev/null || echo "")
+CLUSTER_ID=$(run_oc get clusterversion version -o jsonpath='{.spec.clusterID}' 2>/dev/null || echo "")
 if [[ -z "$CLUSTER_ID" ]]; then
   warn "Could not read ClusterVersion.spec.clusterID"
   CLUSTER_ID="unknown"
@@ -52,14 +101,14 @@ printf "This cluster ID: ${BOLD}%s${RESET}\n" "$CLUSTER_ID"
 # --- 2. OADP / Velero namespace ---
 header "2. Backup Namespace & OADP"
 
-if ! oc get namespace "$NS" &>/dev/null; then
+if ! run_oc get namespace "$NS" &>/dev/null; then
   err "Namespace $NS does not exist. OADP/Velero is not installed for ACM backup."
   printf "\nResult: This cluster is NOT in an active-passive backup configuration.\n"
   exit 0
 fi
 info "Namespace $NS exists"
 
-DPA_COUNT=$(oc get dataprotectionapplications.oadp.openshift.io -n "$NS" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+DPA_COUNT=$(run_oc get dataprotectionapplications.oadp.openshift.io -n "$NS" --no-headers 2>/dev/null | wc -l | tr -d ' ')
 if [[ "$DPA_COUNT" -gt 0 ]]; then
   info "DataProtectionApplication found ($DPA_COUNT)"
 else
@@ -69,7 +118,7 @@ fi
 # --- 3. BackupStorageLocation ---
 header "3. Backup Storage Location (BSL)"
 
-BSL_JSON=$(oc get backupstoragelocations.velero.io -n "$NS" -o json 2>/dev/null || echo '{"items":[]}')
+BSL_JSON=$(run_oc get backupstoragelocations.velero.io -n "$NS" -o json 2>/dev/null || echo '{"items":[]}')
 BSL_COUNT=$(echo "$BSL_JSON" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('items',[])))")
 
 if [[ "$BSL_COUNT" -eq 0 ]]; then
@@ -105,7 +154,7 @@ fi
 # --- 4. BackupSchedule ---
 header "4. ACM BackupSchedule"
 
-SCHED_JSON=$(oc get backupschedules.cluster.open-cluster-management.io -n "$NS" -o json 2>/dev/null || echo '{"items":[]}')
+SCHED_JSON=$(run_oc get backupschedules.cluster.open-cluster-management.io -n "$NS" -o json 2>/dev/null || echo '{"items":[]}')
 SCHED_COUNT=$(echo "$SCHED_JSON" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('items',[])))")
 
 HAS_SCHEDULE=false
@@ -138,7 +187,7 @@ else
 fi
 
 # --- Pre-fetch failover data (needed by step 5 and step 8) ---
-FAILOVER_JSON=$(oc get backups.velero.io -n "$NS" -l cluster.open-cluster-management.io/restore-cluster -o json 2>/dev/null || echo '{"items":[]}')
+FAILOVER_JSON=$(run_oc get backups.velero.io -n "$NS" -l cluster.open-cluster-management.io/restore-cluster -o json 2>/dev/null || echo '{"items":[]}')
 FAILOVER_COUNT=$(echo "$FAILOVER_JSON" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('items',[])))")
 FAILOVER_HUB=""
 if [[ "$FAILOVER_COUNT" -gt 0 ]]; then
@@ -155,7 +204,7 @@ fi
 # --- 5. ACM Restore (passive hub indicator) ---
 header "5. ACM Restore"
 
-RESTORE_JSON=$(oc get restores.cluster.open-cluster-management.io -n "$NS" -o json 2>/dev/null || echo '{"items":[]}')
+RESTORE_JSON=$(run_oc get restores.cluster.open-cluster-management.io -n "$NS" -o json 2>/dev/null || echo '{"items":[]}')
 RESTORE_COUNT=$(echo "$RESTORE_JSON" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('items',[])))")
 
 HAS_RESTORE=false
@@ -264,7 +313,7 @@ fi
 # --- 6. Velero backups from storage (who is the active hub?) ---
 header "6. ACM Backups in Storage"
 
-BACKUP_JSON=$(oc get backups.velero.io -n "$NS" -l velero.io/schedule-name=acm-resources-schedule -o json 2>/dev/null || echo '{"items":[]}')
+BACKUP_JSON=$(run_oc get backups.velero.io -n "$NS" -l velero.io/schedule-name=acm-resources-schedule -o json 2>/dev/null || echo '{"items":[]}')
 BACKUP_COUNT=$(echo "$BACKUP_JSON" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('items',[])))")
 
 ACTIVE_HUB_ID="none"
@@ -302,7 +351,7 @@ fi
 # --- 7. Validation policy (primary active hub check) ---
 header "7. Active Hub Detection (Validation Policy)"
 
-VAL_JSON=$(oc get backups.velero.io -n "$NS" -l velero.io/schedule-name=acm-validation-policy-schedule -o json 2>/dev/null || echo '{"items":[]}')
+VAL_JSON=$(run_oc get backups.velero.io -n "$NS" -l velero.io/schedule-name=acm-validation-policy-schedule -o json 2>/dev/null || echo '{"items":[]}')
 VAL_COUNT=$(echo "$VAL_JSON" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('items',[])))")
 
 CRON_ACTIVE=false
@@ -666,7 +715,7 @@ if [[ "$NEEDS_COLLISION_CLEANUP" == true ]]; then
   printf "  This schedule is no longer producing valid backups and should be removed.\n"
   run_with_confirm "$STEP" \
     "Remove colliding BackupSchedule '${SCHEDULE_NAME}'" \
-    "oc delete backupschedule ${SCHEDULE_NAME} -n ${NS}"
+    "$OC delete backupschedule ${SCHEDULE_NAME} -n ${NS}"
 
   # Offer to set up passive if no Restore is syncing
   if [[ "$RESTORE_PHASE" != "Enabled" && "$RESTORE_PHASE" != "EnabledWithErrors" ]]; then
@@ -680,7 +729,7 @@ if [[ "$NEEDS_COLLISION_CLEANUP" == true ]]; then
     if [[ "$PASSIVE_CHOICE" == "1" ]]; then
       run_with_confirm "$STEP" \
         "Create passive sync Restore on this cluster" \
-        "oc apply -n ${NS} -f - <<'YAML'
+        "$OC apply -n ${NS} -f - <<'YAML'
 apiVersion: cluster.open-cluster-management.io/v1beta1
 kind: Restore
 metadata:
@@ -720,7 +769,7 @@ for r in items: print(r['metadata']['name'])
 
     run_with_confirm "$STEP" \
       "Remove BackupSchedule '${SCHEDULE_NAME}' (this hub will stop creating backups)" \
-      "oc delete backupschedule ${SCHEDULE_NAME} -n ${NS}"
+      "$OC delete backupschedule ${SCHEDULE_NAME} -n ${NS}"
 
     if [[ "$HAS_RESTORE" != true ]]; then
       STEP=$((STEP + 1))
@@ -733,7 +782,7 @@ for r in items: print(r['metadata']['name'])
       if [[ "$PASSIVE_CHOICE" == "1" ]]; then
         run_with_confirm "$STEP" \
           "Create passive sync Restore on this cluster" \
-          "oc apply -n ${NS} -f - <<'YAML'
+          "$OC apply -n ${NS} -f - <<'YAML'
 apiVersion: cluster.open-cluster-management.io/v1beta1
 kind: Restore
 metadata:
@@ -750,7 +799,7 @@ YAML"
       else
         run_with_confirm "$STEP" \
           "Create passive Restore on this cluster" \
-          "oc apply -n ${NS} -f - <<'YAML'
+          "$OC apply -n ${NS} -f - <<'YAML'
 apiVersion: cluster.open-cluster-management.io/v1beta1
 kind: Restore
 metadata:
@@ -779,7 +828,7 @@ if [[ "$NEEDS_SCHEDULE" == true ]]; then
     printf "  Since this hub should be the active hub, the syncing Restore should be removed first.\n"
     run_with_confirm "$STEP" \
       "Remove Restore '${RESTORE_NAME_LATEST}' (stop passive sync -- this hub is becoming active)" \
-      "oc delete restore.cluster.open-cluster-management.io ${RESTORE_NAME_LATEST} -n ${NS}"
+      "$OC delete restore.cluster.open-cluster-management.io ${RESTORE_NAME_LATEST} -n ${NS}"
   elif [[ "$HAS_RESTORE" == true ]]; then
     printf "\n${GREEN}Note:${RESET} Existing Restore '%s' (phase=%s) is in a terminal state -- no need to remove it.\n" "$RESTORE_NAME_LATEST" "$RESTORE_PHASE"
   fi
@@ -798,7 +847,7 @@ if [[ "$NEEDS_SCHEDULE" == true ]]; then
 
   run_with_confirm "$STEP" \
     "Create BackupSchedule on this cluster (cron=$CRON, ttl=$TTL)" \
-    "oc apply -n ${NS} -f - <<'YAML'
+    "$OC apply -n ${NS} -f - <<'YAML'
 apiVersion: cluster.open-cluster-management.io/v1beta1
 kind: BackupSchedule
 metadata:
@@ -815,7 +864,7 @@ if [[ "$NEEDS_PASSIVE" == true && "$NEEDS_COLLISION_CLEANUP" == false ]]; then
   STEP=$((STEP + 1))
   run_with_confirm "$STEP" \
     "Create passive sync Restore on this cluster (MC=skip, sync every 30m)" \
-    "oc apply -n ${NS} -f - <<'YAML'
+    "$OC apply -n ${NS} -f - <<'YAML'
 apiVersion: cluster.open-cluster-management.io/v1beta1
 kind: Restore
 metadata:
@@ -866,6 +915,6 @@ STEP=$((STEP + 1))
 printf "\n"
 run_with_confirm "$STEP" \
   "Verify: re-check BackupSchedule and Restore status" \
-  "echo '--- BackupSchedules ---' && oc get backupschedules.cluster.open-cluster-management.io -n ${NS} 2>/dev/null || echo 'None' && echo '--- Restores ---' && oc get restores.cluster.open-cluster-management.io -n ${NS} 2>/dev/null || echo 'None' && echo '--- BSL ---' && oc get bsl -n ${NS} 2>/dev/null || echo 'None'"
+  "echo '--- BackupSchedules ---' && $OC get backupschedules.cluster.open-cluster-management.io -n ${NS} 2>/dev/null || echo 'None' && echo '--- Restores ---' && $OC get restores.cluster.open-cluster-management.io -n ${NS} 2>/dev/null || echo 'None' && echo '--- BSL ---' && $OC get bsl -n ${NS} 2>/dev/null || echo 'None'"
 
 printf "\n${GREEN}Fix workflow complete.${RESET}\n\n"

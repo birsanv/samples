@@ -10,21 +10,31 @@ Diagnose the ACM (Advanced Cluster Management) backup/restore configuration on t
 
 ## Quick Start
 
-Run the diagnostic script. The script path depends on the AI tool:
+Run the diagnostic script. The script accepts an optional cluster context name. If omitted, it uses the current kubeconfig context.
 
 **Claude Code:**
 
 ```bash
+# Use a specific context
+bash ${CLAUDE_SKILL_DIR}/scripts/assess-backup-config.sh vb-hub-a
+
+# Use current context
 bash ${CLAUDE_SKILL_DIR}/scripts/assess-backup-config.sh
 ```
 
 **Cursor:**
 
 ```bash
+# Use a specific context
+bash <skill-dir>/scripts/assess-backup-config.sh vb-hub-a
+
+# Use current context
 bash <skill-dir>/scripts/assess-backup-config.sh
 ```
 
-The script requires `oc` CLI logged in to an OpenShift cluster with ACM installed.
+The context name must match an entry in the user's kubeconfig (see `oc config get-contexts`). Ask the user which context to use, or omit to use the current one.
+
+The script requires `oc` CLI and a valid kubeconfig context for an OpenShift cluster with ACM installed.
 
 ## What It Detects
 
