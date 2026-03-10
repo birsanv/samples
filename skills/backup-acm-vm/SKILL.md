@@ -31,27 +31,45 @@ The script requires `oc` CLI, `python3`, and a valid kubeconfig context for an O
 
 ## What It Does
 
-The script walks through 6 steps interactively:
+The script walks through 8 steps interactively:
 
 ### Step 1: Discover VirtualMachines
 
-Lists all `kubevirt.io/VirtualMachine` resources across all namespaces. Shows:
+On the hub, uses the ACM search API to discover VMs across all managed clusters. Falls back to local `oc get` if search is unavailable or on managed clusters. VMs are grouped by owning cluster and show:
 - Namespace and name
 - Running status
 - Current backup schedule (if any)
+- OS type (from `os.template.kubevirt.io/*` or `kubevirt.io/os` labels)
 - VM UID
 
-### Step 2: Select VMs to back up
+### Step 2: Remove VMs from backup
 
-The user picks VMs by number (comma-separated) or `all`. VMs already backed up with the same schedule are skipped.
+Shows only the VMs that already have a backup schedule, grouped by cluster. The user selects which to remove using numbers, filters, or Enter to skip.
 
-### Step 3: Choose backup schedule
+### Step 3: Select VMs to back up
+
+Shows all VMs except those just removed, grouped by cluster. VMs already backed up are included (to allow changing their schedule).
+
+**Selection syntax** (used in both steps 2 and 3):
+
+| Syntax | Example | Description |
+|--------|---------|-------------|
+| Numbers | `1,2,3` | Select by displayed index |
+| `all` | `all` | Select all listed VMs |
+| `cluster=<name>` | `cluster=spoke1` | All VMs on that cluster |
+| `ns=<namespace>` | `ns=default` | All VMs in that namespace |
+| `os=<type>` | `os=fedora` | All VMs with that OS type |
+| `label=<key>=<val>` | `label=app=web` | All VMs with that label |
+
+Filters can be combined with spaces: `ns=default os=fedora`
+
+### Step 4: Choose backup schedule
 
 The `acm-dr-virt-schedule-cron` ConfigMap is auto-created with 9 predefined schedules: `hourly`, `every_2_hours`, `every_3_hours`, `every_4_hours`, `every_5_hours`, `every_6_hours`, `twice_a_day`, `daily_8am`, `every_sunday`. The script lists these for selection.
 
 If the chosen schedule name is not in the cron ConfigMap, the script offers to add it (with a user-supplied cron expression). Note: predefined entries are managed by the backup component and cannot be modified or deleted.
 
-### Step 4: Verify policy infrastructure
+### Step 5: Verify policy infrastructure
 
 The policies and ConfigMaps are auto-created when `cluster-backup` is enabled on MCH. The script verifies they exist:
 
@@ -64,11 +82,15 @@ The policies and ConfigMaps are auto-created when `cluster-backup` is enabled on
 | **Restore ConfigMap** | Auto-created empty |
 | **DPA and BSL** | Reports status; DPA is created by the policy once config is complete |
 
-### Step 5: Apply backup labels
+### Step 6: Apply backup labels
 
 Applies `cluster.open-cluster-management.io/backup-vm=<schedule>` to each selected VM. Skips VMs already on the same schedule. Shows success/failure for each.
 
-### Step 6: Summary and next steps
+### Step 7: Verify backup policy
+
+After labeling, waits for `acm-dr-virt-backup` to reconcile and reports per-template compliance. If the cron schedule is invalid, offers to add it to the ConfigMap.
+
+### Step 8: Summary and next steps
 
 Reports what was done and what the user should expect (velero Schedule creation, backups starting).
 
