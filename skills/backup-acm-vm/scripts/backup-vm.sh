@@ -433,33 +433,29 @@ fi
 VM_COUNT=$(echo "$VM_TABLE" | wc -l | tr -d ' ')
 printf "Found ${BOLD}%d${RESET} VirtualMachine(s):\n\n" "$VM_COUNT"
 
-# Collect unique clusters and namespaces for display
 CLUSTERS_LIST=$(echo "$VM_TABLE" | while IFS='|' read -r _ cl _ _ _ _ _ _; do echo "$cl"; done | sort -u)
 
-# Display grouped by cluster
-for DISP_CLUSTER in $CLUSTERS_LIST; do
-  printf "  ${BOLD}${CYAN}Cluster: %s${RESET}\n" "$DISP_CLUSTER"
-  printf "  ${BOLD}%-4s %-20s %-18s %-12s %-14s %-10s${RESET}\n" "#" "NAMESPACE/NAME" "STATUS" "BACKUP" "OS" "UID"
-  echo "$VM_TABLE" | while IFS='|' read -r idx cl ns name status backup os uid; do
-    if [[ "$cl" != "$DISP_CLUSTER" ]]; then
-      continue
-    fi
-    if [[ "$backup" != "-" ]]; then
-      backup_display="${GREEN}${backup}${RESET}"
-    else
-      backup_display="${DIM}-${RESET}"
-    fi
-    os_display="${os}"
-    [[ "$os" == "-" ]] && os_display="${DIM}-${RESET}"
-    printf "  %-4s %-20s %-18s " "$idx" "${ns}/${name}" "$status"
-    printf "$backup_display"
-    printf "%*s" $((14 - ${#backup})) ""
-    printf " $os_display"
-    printf "%*s" $((10 - ${#os})) ""
-    printf " ${DIM}%.8s${RESET}\n" "$uid"
-  done
-  printf "\n"
+# Sort VM_TABLE by cluster then namespace for display
+SORTED_VM_TABLE=$(echo "$VM_TABLE" | sort -t'|' -k2,2 -k3,3)
+
+printf "  ${BOLD}%-4s %-18s %-14s %-25s %-8s %-18s${RESET}\n" "#" "CLUSTER" "BACKUP" "NAMESPACE/NAME" "OS" "STATUS"
+echo "$SORTED_VM_TABLE" | while IFS='|' read -r idx cl ns name status backup os uid; do
+  if [[ "$backup" != "-" ]]; then
+    backup_display="${GREEN}${backup}${RESET}"
+  else
+    backup_display="${DIM}-${RESET}"
+  fi
+  os_display="${os}"
+  [[ "$os" == "-" ]] && os_display="${DIM}-${RESET}"
+  printf "  %-4s ${CYAN}%-18s${RESET} " "$idx" "$cl"
+  printf "$backup_display"
+  printf "%*s" $((14 - ${#backup})) ""
+  printf "%-25s " "${ns}/${name}"
+  printf "$os_display"
+  printf "%*s" $((8 - ${#os})) ""
+  printf "${DIM}%s${RESET}\n" "$status"
 done
+printf "\n"
 
 if [[ "$LIST_ONLY" == true ]]; then
   printf "Legend: BACKUP = cron schedule name ('-' = not backed up), OS = detected OS type\n"
@@ -554,20 +550,12 @@ if [[ -n "$BACKED_UP_TABLE" ]]; then
   header "2. VMs currently backed up"
 
   printf "These VMs already have a backup schedule:\n\n"
-  for DISP_CLUSTER in $CLUSTERS_LIST; do
-    HAS_BACKED=$(echo "$BACKED_UP_TABLE" | while IFS='|' read -r _ bcl _ _ _ _ _ _; do
-      if [[ "$bcl" == "$DISP_CLUSTER" ]]; then echo "yes"; fi
-    done | head -1)
-    [[ "$HAS_BACKED" != "yes" ]] && continue
-
-    printf "  ${BOLD}${CYAN}Cluster: %s${RESET}\n" "$DISP_CLUSTER"
-    printf "  ${BOLD}%-4s %-20s %-18s %-14s %-10s${RESET}\n" "#" "NAMESPACE/NAME" "STATUS" "SCHEDULE" "OS"
-    echo "$BACKED_UP_TABLE" | while IFS='|' read -r bidx bcl bns bname bstatus bbackup bos buid; do
-      [[ "$bcl" != "$DISP_CLUSTER" ]] && continue
-      printf "  %-4s %-20s %-18s ${GREEN}%-14s${RESET} %s\n" "$bidx" "${bns}/${bname}" "$bstatus" "$bbackup" "$bos"
-    done
-    printf "\n"
+  SORTED_BACKED=$(echo "$BACKED_UP_TABLE" | sort -t'|' -k2,2 -k3,3)
+  printf "  ${BOLD}%-4s %-18s %-14s %-25s %-8s %-18s${RESET}\n" "#" "CLUSTER" "SCHEDULE" "NAMESPACE/NAME" "OS" "STATUS"
+  echo "$SORTED_BACKED" | while IFS='|' read -r bidx bcl bns bname bstatus bbackup bos buid; do
+    printf "  %-4s ${CYAN}%-18s${RESET} ${GREEN}%-14s${RESET} %-25s %-8s ${DIM}%s${RESET}\n" "$bidx" "$bcl" "$bbackup" "${bns}/${bname}" "$bos" "$bstatus"
   done
+  printf "\n"
 
   printf "Select VMs to ${RED}remove from backup${RESET}:\n"
   printf "  Numbers (e.g. 1,2,3), or filters: cluster=<name> ns=<ns> os=<type> label=<k>=<v>\n"
@@ -654,27 +642,25 @@ AVAIL_COUNT=$(echo "$AVAIL_TABLE" | wc -l | tr -d ' ')
 AVAIL_CLUSTERS=$(echo "$AVAIL_TABLE" | while IFS='|' read -r _ acl _ _ _ _ _ _; do echo "$acl"; done | sort -u)
 
 printf "Available VMs (excluding removed):\n\n"
-for DISP_CLUSTER in $AVAIL_CLUSTERS; do
-  printf "  ${BOLD}${CYAN}Cluster: %s${RESET}\n" "$DISP_CLUSTER"
-  printf "  ${BOLD}%-4s %-20s %-18s %-12s %-14s %-10s${RESET}\n" "#" "NAMESPACE/NAME" "STATUS" "BACKUP" "OS" "UID"
-  echo "$AVAIL_TABLE" | while IFS='|' read -r aidx acl ans aname astatus abackup aos auid; do
-    [[ "$acl" != "$DISP_CLUSTER" ]] && continue
-    if [[ "$abackup" != "-" ]]; then
-      backup_display="${GREEN}${abackup}${RESET}"
-    else
-      backup_display="${DIM}-${RESET}"
-    fi
-    os_display="${aos}"
-    [[ "$aos" == "-" ]] && os_display="${DIM}-${RESET}"
-    printf "  %-4s %-20s %-18s " "$aidx" "${ans}/${aname}" "$astatus"
-    printf "$backup_display"
-    printf "%*s" $((14 - ${#abackup})) ""
-    printf " $os_display"
-    printf "%*s" $((10 - ${#aos})) ""
-    printf " ${DIM}%.8s${RESET}\n" "$auid"
-  done
-  printf "\n"
+SORTED_AVAIL=$(echo "$AVAIL_TABLE" | sort -t'|' -k2,2 -k3,3)
+printf "  ${BOLD}%-4s %-18s %-14s %-25s %-8s %-18s${RESET}\n" "#" "CLUSTER" "BACKUP" "NAMESPACE/NAME" "OS" "STATUS"
+echo "$SORTED_AVAIL" | while IFS='|' read -r aidx acl ans aname astatus abackup aos auid; do
+  if [[ "$abackup" != "-" ]]; then
+    backup_display="${GREEN}${abackup}${RESET}"
+  else
+    backup_display="${DIM}-${RESET}"
+  fi
+  os_display="${aos}"
+  [[ "$aos" == "-" ]] && os_display="${DIM}-${RESET}"
+  printf "  %-4s ${CYAN}%-18s${RESET} " "$aidx" "$acl"
+  printf "$backup_display"
+  printf "%*s" $((14 - ${#abackup})) ""
+  printf "%-25s " "${ans}/${aname}"
+  printf "$os_display"
+  printf "%*s" $((8 - ${#aos})) ""
+  printf "${DIM}%s${RESET}\n" "$astatus"
 done
+printf "\n"
 
 printf "Select VMs to back up:\n"
 printf "  Numbers (e.g. 1,2,3), 'all', or filters: cluster=<name> ns=<ns> os=<type> label=<k>=<v>\n"
@@ -1023,14 +1009,21 @@ for TC in $TARGET_CLUSTERS; do
   else
     DPA_OK=false
     warn "No DataProtectionApplication on '$TC' in $TC_OADP_NS"
+    TC_IS_ALSO_HUB=false
     if [[ "$TC" == "$LOCAL_MC" && "$IS_HUB" == true ]]; then
-      printf "  On hub, OADP is installed via MCH backup option. Enable it first.\n"
+      TC_IS_ALSO_HUB=true
+    elif [[ "$TC" != "$LOCAL_MC" ]]; then
+      run_oc_on_cluster "$TC" get crd multiclusterhubs.operator.open-cluster-management.io &>/dev/null && TC_IS_ALSO_HUB=true
+    fi
+    if [[ "$TC_IS_ALSO_HUB" == true ]]; then
+      printf "  '%s' is a hub. OADP is managed by MCH; the DPA must be created by the user.\n" "$TC"
     else
       printf "  The acm-dr-virt-install policy will create DPA once policies are placed and config is set.\n"
     fi
   fi
 
-  BSL_AVAIL=$(run_oc_on_cluster "$TC" get backupstoragelocations.velero.io -n "$TC_OADP_NS" --no-headers 2>/dev/null | grep -c "Available" || echo "0")
+  BSL_OUTPUT=$(run_oc_on_cluster "$TC" get backupstoragelocations.velero.io -n "$TC_OADP_NS" --no-headers 2>/dev/null || echo "")
+  BSL_AVAIL=$(echo "$BSL_OUTPUT" | grep -c "Available" || true)
   if [[ "$BSL_AVAIL" -gt 0 ]]; then
     info "$BSL_AVAIL BSL(s) Available on '$TC'"
   else
@@ -1102,6 +1095,14 @@ for v in violated:
       IS_LOCAL_TC=false
       [[ "$TC" == "$LOCAL_MC" ]] && IS_LOCAL_TC=true
 
+      # Check if this managed cluster is itself a hub (has MCH CRD)
+      TC_IS_HUB=false
+      if [[ "$IS_LOCAL_TC" == true ]]; then
+        TC_IS_HUB="$IS_HUB"
+      elif run_oc_on_cluster "$TC" get crd multiclusterhubs.operator.open-cluster-management.io &>/dev/null; then
+        TC_IS_HUB=true
+      fi
+
       printf "\n  ${BOLD}Suggested fixes (%s):${RESET}\n" "$TC"
       echo "$VIOLATED" | while IFS= read -r tmpl; do
         case "$tmpl" in
@@ -1116,12 +1117,18 @@ for v in violated:
           *check-dpa-config*)
             printf "    - ${YELLOW}%s${RESET}: DPA missing kubevirt/csi plugins, nodeAgent not enabled, or BSL not Available.\n" "$tmpl"
 
-            if [[ "$IS_LOCAL_TC" == true && "$IS_HUB" == true ]]; then
-              printf "\n      ${BOLD}On the hub (local-cluster)${RESET}, OADP is managed by MCH. The DPA needs to be patched directly.\n"
+            if [[ "$TC_IS_HUB" == true ]]; then
+              if [[ "$IS_LOCAL_TC" == true ]]; then
+                printf "\n      ${BOLD}On the hub (local-cluster)${RESET}, OADP is managed by MCH. The DPA needs to be patched directly.\n"
+              else
+                printf "\n      ${BOLD}Managed cluster '%s' is itself a hub${RESET}. The policy does NOT install OADP on hubs.\n" "$TC"
+                printf "      OADP must be installed on '%s' via its own MCH cluster-backup component.\n" "$TC"
+                printf "      Ensure cluster-backup is enabled on the MCH of '%s', then patch the DPA directly.\n" "$TC"
+              fi
 
-              DPA_NAME_FOUND=$(run_oc get dataprotectionapplication -n "$OADP_NS" --no-headers 2>/dev/null | awk '{print $1;exit}' || echo "")
+              DPA_NAME_FOUND=$(run_oc_on_cluster "$TC" get dataprotectionapplication -n "$OADP_NS" --no-headers 2>/dev/null | awk '{print $1;exit}' || echo "")
               if [[ -n "$DPA_NAME_FOUND" ]]; then
-                DPA_JSON=$(run_oc get dataprotectionapplication "$DPA_NAME_FOUND" -n "$OADP_NS" -o json 2>/dev/null || echo "")
+                DPA_JSON=$(run_oc_on_cluster "$TC" get dataprotectionapplication "$DPA_NAME_FOUND" -n "$OADP_NS" -o json 2>/dev/null || echo "")
                 MISSING_ITEMS=()
 
                 HAS_KUBEVIRT=$(echo "$DPA_JSON" | python3 -c "
@@ -1184,10 +1191,10 @@ print(json.dumps(patch))
 
                     if [[ -n "$PATCH_JSON" ]]; then
                       printf "      Patching DPA plugins and nodeAgent...\n"
-                      run_oc patch dataprotectionapplication "$DPA_NAME_FOUND" -n "$OADP_NS" \
+                      run_oc_on_cluster "$TC" patch dataprotectionapplication "$DPA_NAME_FOUND" -n "$OADP_NS" \
                         --type merge -p "$PATCH_JSON" 2>/dev/null && \
-                        info "    Patched DPA '$DPA_NAME_FOUND' with kubevirt, csi plugins and nodeAgent" || \
-                        warn "    Failed to patch DPA. Patch manually: oc edit dataprotectionapplication $DPA_NAME_FOUND -n $OADP_NS"
+                        info "    Patched DPA '$DPA_NAME_FOUND' on '$TC' with kubevirt, csi plugins and nodeAgent" || \
+                        warn "    Failed to patch DPA. Patch manually on '$TC': oc edit dataprotectionapplication $DPA_NAME_FOUND -n $OADP_NS"
                     fi
 
                     if [[ "$SNAPSHOT_MOVE" != "yes" ]]; then
@@ -1200,8 +1207,20 @@ print(json.dumps(patch))
                   fi
                 fi
               else
-                printf "      No DPA found in %s. OADP may not be installed.\n" "$OADP_NS"
-                printf "      Ensure cluster-backup is enabled on MCH.\n"
+                OADP_CSV_FOUND=$(run_oc_on_cluster "$TC" get csv -n "$OADP_NS" --no-headers 2>/dev/null | grep -c "oadp" || true)
+                if [[ "$OADP_CSV_FOUND" -gt 0 ]]; then
+                  printf "      OADP operator is installed on '%s' but no DPA has been created.\n" "$TC"
+                  printf "      Create a DataProtectionApplication in %s on '%s' with kubevirt, csi plugins and nodeAgent (kopia).\n" "$OADP_NS" "$TC"
+                  printf "      The policy will become Compliant once the DPA exists and BSL is Available.\n"
+                else
+                  printf "      No OADP operator found on '%s' in %s.\n" "$TC" "$OADP_NS"
+                  if [[ "$IS_LOCAL_TC" == true ]]; then
+                    printf "      Ensure cluster-backup is enabled on MCH.\n"
+                  else
+                    printf "      '%s' is a hub -- enable cluster-backup on its MCH to install OADP.\n" "$TC"
+                    printf "      Check: oc --context %s get multiclusterhub -A -o jsonpath='{.items[0].spec.overrides.components}'\n" "${MC_CONTEXT_MAP[$TC]:-$TC}"
+                  fi
+                fi
               fi
 
             else
