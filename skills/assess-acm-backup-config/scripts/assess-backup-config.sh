@@ -418,6 +418,153 @@ else
   info "No failover restores detected"
 fi
 
+# --- 9. Backup & Restore Policy Validation ---
+header "9. Backup & Restore Policy Validation"
+
+POLICY_FOUND=false
+POLICY_COMPLIANT=true
+POLICY_VIOLATION_TEMPLATES=""
+AI_COMPLIANT=true
+AI_VIOLATION_TEMPLATES=""
+
+POLICY_CRD_EXISTS=true
+if ! run_oc get crd policies.policy.open-cluster-management.io &>/dev/null; then
+  POLICY_CRD_EXISTS=false
+  warn "Policy CRD not found -- governance framework may not be installed."
+fi
+
+if [[ "$POLICY_CRD_EXISTS" == true ]]; then
+  LOCAL_CLUSTER_NAME=$(run_oc get managedclusters.cluster.open-cluster-management.io -l local-cluster=true --no-headers 2>/dev/null | awk '{print $1;exit}' || echo "")
+  [[ -z "$LOCAL_CLUSTER_NAME" ]] && LOCAL_CLUSTER_NAME="local-cluster"
+
+  # ---- backup-restore-enabled ----
+  printf "${BOLD}backup-restore-enabled policy:${RESET}\n"
+  BR_ROOT=$(run_oc get policy.policy.open-cluster-management.io backup-restore-enabled -n "$NS" -o json 2>/dev/null || echo "")
+  if [[ -z "$BR_ROOT" ]]; then
+    BR_SEARCH_NS=$(run_oc get policy.policy.open-cluster-management.io -A --no-headers 2>/dev/null | awk '$2=="backup-restore-enabled"{print $1;exit}' || echo "")
+    if [[ -n "$BR_SEARCH_NS" ]]; then
+      BR_ROOT=$(run_oc get policy.policy.open-cluster-management.io backup-restore-enabled -n "$BR_SEARCH_NS" -o json 2>/dev/null || echo "")
+    fi
+  fi
+
+  if [[ -z "$BR_ROOT" ]]; then
+    warn "Policy not found. It is installed when cluster-backup is enabled on MultiClusterHub."
+    printf "  If hub self-management is disabled (disableHubSelfManagement=true),\n"
+    printf "  set the is-hub=true label on the ManagedCluster resource representing the local cluster.\n"
+  else
+    POLICY_FOUND=true
+    BR_COMPLIANCE=$(echo "$BR_ROOT" | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',{}).get('compliant','Unknown'))" 2>/dev/null || echo "Unknown")
+
+    if [[ "$BR_COMPLIANCE" == "Compliant" ]]; then
+      info "Overall: Compliant"
+    else
+      err "Overall: ${BR_COMPLIANCE}"
+      POLICY_COMPLIANT=false
+    fi
+
+    BR_ORIG_NS=$(echo "$BR_ROOT" | python3 -c "import sys,json;print(json.load(sys.stdin)['metadata']['namespace'])" 2>/dev/null || echo "$NS")
+    BR_REPLICATED=$(run_oc get policy.policy.open-cluster-management.io "${BR_ORIG_NS}.backup-restore-enabled" -n "$LOCAL_CLUSTER_NAME" -o json 2>/dev/null || echo "")
+    [[ -z "$BR_REPLICATED" ]] && BR_REPLICATED="$BR_ROOT"
+
+    echo "$BR_REPLICATED" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+details = data.get('status', {}).get('details', [])
+for d in details:
+    name = d.get('templateMeta', {}).get('name', 'unknown')
+    compliant = d.get('compliant', 'Unknown')
+    history = d.get('history', [])
+    msg = ''
+    if history:
+        msg = history[0].get('message', '')
+    if compliant == 'Compliant':
+        print(f'  \033[32m[OK]\033[0m {name}')
+    elif compliant == 'NonCompliant':
+        print(f'  \033[31m[VIOLATION]\033[0m {name}')
+        if msg:
+            if len(msg) > 300:
+                msg = msg[:300] + '...'
+            print(f'       {msg}')
+    else:
+        print(f'  \033[33m[{compliant}]\033[0m {name}')
+        if msg:
+            if len(msg) > 300:
+                msg = msg[:300] + '...'
+            print(f'       {msg}')
+" 2>/dev/null || true
+
+    POLICY_VIOLATION_TEMPLATES=$(echo "$BR_REPLICATED" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+details = data.get('status', {}).get('details', [])
+violations = [d.get('templateMeta',{}).get('name','?') for d in details if d.get('compliant') == 'NonCompliant']
+print(','.join(violations))
+" 2>/dev/null || echo "")
+  fi
+
+  # ---- backup-restore-auto-import ----
+  printf "\n${BOLD}backup-restore-auto-import policy:${RESET}\n"
+  AI_ROOT=$(run_oc get policy.policy.open-cluster-management.io backup-restore-auto-import -n "$NS" -o json 2>/dev/null || echo "")
+  if [[ -z "$AI_ROOT" ]]; then
+    AI_SEARCH_NS=$(run_oc get policy.policy.open-cluster-management.io -A --no-headers 2>/dev/null | awk '$2=="backup-restore-auto-import"{print $1;exit}' || echo "")
+    if [[ -n "$AI_SEARCH_NS" ]]; then
+      AI_ROOT=$(run_oc get policy.policy.open-cluster-management.io backup-restore-auto-import -n "$AI_SEARCH_NS" -o json 2>/dev/null || echo "")
+    fi
+  fi
+
+  if [[ -z "$AI_ROOT" ]]; then
+    info "Policy not found (only present when useManagedServiceAccount is enabled on BackupSchedule)."
+  else
+    AI_COMPLIANCE=$(echo "$AI_ROOT" | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',{}).get('compliant','Unknown'))" 2>/dev/null || echo "Unknown")
+
+    if [[ "$AI_COMPLIANCE" == "Compliant" ]]; then
+      info "Overall: Compliant"
+    else
+      err "Overall: ${AI_COMPLIANCE}"
+      AI_COMPLIANT=false
+    fi
+
+    AI_ORIG_NS=$(echo "$AI_ROOT" | python3 -c "import sys,json;print(json.load(sys.stdin)['metadata']['namespace'])" 2>/dev/null || echo "$NS")
+    AI_REPLICATED=$(run_oc get policy.policy.open-cluster-management.io "${AI_ORIG_NS}.backup-restore-auto-import" -n "$LOCAL_CLUSTER_NAME" -o json 2>/dev/null || echo "")
+    [[ -z "$AI_REPLICATED" ]] && AI_REPLICATED="$AI_ROOT"
+
+    echo "$AI_REPLICATED" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+details = data.get('status', {}).get('details', [])
+for d in details:
+    name = d.get('templateMeta', {}).get('name', 'unknown')
+    compliant = d.get('compliant', 'Unknown')
+    history = d.get('history', [])
+    msg = ''
+    if history:
+        msg = history[0].get('message', '')
+    if compliant == 'Compliant':
+        print(f'  \033[32m[OK]\033[0m {name}')
+    elif compliant == 'NonCompliant':
+        print(f'  \033[31m[VIOLATION]\033[0m {name}')
+        if msg:
+            if len(msg) > 300:
+                msg = msg[:300] + '...'
+            print(f'       {msg}')
+    else:
+        print(f'  \033[33m[{compliant}]\033[0m {name}')
+        if msg:
+            if len(msg) > 300:
+                msg = msg[:300] + '...'
+            print(f'       {msg}')
+" 2>/dev/null || true
+
+    AI_VIOLATION_TEMPLATES=$(echo "$AI_REPLICATED" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+details = data.get('status', {}).get('details', [])
+violations = [d.get('templateMeta',{}).get('name','?') for d in details if d.get('compliant') == 'NonCompliant']
+print(','.join(violations))
+" 2>/dev/null || echo "")
+  fi
+fi
+
 # --- Summary ---
 header "SUMMARY"
 
@@ -597,6 +744,20 @@ if [[ "$ROLE" != "ACTIVE" && "$ROLE" != "ACTIVE_NO_VALIDATION" && "$ROLE" != "FA
       "Restore exists but is not actively syncing (phase: $RESTORE_PHASE). A proper passive hub should have a Restore with syncRestoreWithNewBackups: true in Enabled state." \
       "create_passive"
   fi
+fi
+
+# backup-restore-enabled policy violations
+if [[ "$POLICY_FOUND" == true && "$POLICY_COMPLIANT" == false && -n "$POLICY_VIOLATION_TEMPLATES" ]]; then
+  add_issue "ERROR" \
+    "backup-restore-enabled policy is NonCompliant. Violating templates: ${POLICY_VIOLATION_TEMPLATES}. See section 9 above for details." \
+    "none"
+fi
+
+# backup-restore-auto-import policy violations
+if [[ "$AI_COMPLIANT" == false && -n "$AI_VIOLATION_TEMPLATES" ]]; then
+  add_issue "WARN" \
+    "backup-restore-auto-import policy is NonCompliant. Violating templates: ${AI_VIOLATION_TEMPLATES}. See section 9 above for details." \
+    "none"
 fi
 
 if [[ ${#ISSUES[@]} -eq 0 ]]; then

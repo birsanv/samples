@@ -48,6 +48,7 @@ The script requires `oc` CLI and a valid kubeconfig context for an OpenShift clu
 | ACM backups in storage | Latest `acm-resources-schedule` backup's `backup-cluster` label |
 | **Active hub (primary)** | **`acm-validation-policy-schedule` backups exist AND created by this cluster** |
 | Post-failover | Backups with `restore-cluster` label (managed-clusters restore ran) |
+| **Policy validation** | **`backup-restore-enabled` and `backup-restore-auto-import` policy compliance + per-template status** |
 
 ## Interpreting Results
 
@@ -80,6 +81,41 @@ The script cross-references failover history, backup ownership, and schedule sta
 | This cluster has a BackupSchedule but another hub owns backups | Likely collision -- only one hub should write backups |
 | Passive cluster but no backups in storage | Active hub may not be running, or BSL not syncing |
 | Passive cluster but no validation backups | Active hub's cron may have stopped |
+| `backup-restore-enabled` policy NonCompliant | One or more validation templates report violations |
+| `backup-restore-auto-import` policy NonCompliant | Auto-import secret or label issues on managed clusters |
+
+### Policy validation (section 9)
+
+The script queries the `backup-restore-enabled` and `backup-restore-auto-import` governance policies and shows per-template compliance. These policies are installed by the backup Helm chart when `cluster-backup` is enabled on `MultiClusterHub`.
+
+**`backup-restore-enabled` templates:**
+
+| Template | What it checks |
+|----------|---------------|
+| `oadp-operator-exists` | OADP operator is installed in `open-cluster-management-backup` |
+| `oadp-channel-validation` | OADP version matches or exceeds the version set by the backup chart |
+| `custom-oadp-channel-validation` | OADP operators in other namespaces match the version in the backup namespace |
+| `acm-backup-pod-running` | Backup and restore operator pod is running |
+| `oadp-pod-running` | OADP operator pod is running |
+| `velero-pod-running` | Velero pod is running |
+| `data-protection-application-available` | A `DataProtectionApplication` resource exists |
+| `backup-storage-location-available` | A `BackupStorageLocation` exists with status `Available` |
+| `acm-backup-clusters-collision-report` | BackupSchedule is not in `BackupCollision` state |
+| `acm-backup-phase-validation` | BackupSchedule/Restore status is not `Failed` or `Empty` |
+| `acm-managed-clusters-schedule-backups-available` | Velero backups exist at the storage location |
+| `acm-backup-in-progress-report` | No backups are stuck in `InProgress` state |
+| `backup-schedule-cron-enabled` | The primary hub is actively generating new backups on schedule |
+
+**`backup-restore-auto-import` templates:**
+
+| Template | What it checks |
+|----------|---------------|
+| `auto-import-account-secret` | `ManagedServiceAccount` secret exists in managed cluster namespaces |
+| `auto-import-backup-label` | `ManagedServiceAccount` secrets have the `cluster.open-cluster-management.io/backup` label |
+
+If the policy is `NonCompliant`, the violating templates and their messages are shown inline and added to the issues list.
+
+**Note:** If hub self-management is disabled (`disableHubSelfManagement=true`), the policy is not placed on the hub cluster. Set the `is-hub=true` label on the `ManagedCluster` representing the local cluster to enable it.
 
 ## Interactive Fix Mode
 
@@ -132,6 +168,7 @@ oc get clusterversion version -o jsonpath='{.spec.clusterID}'
 | `Backup` | `velero.io/v1` | `open-cluster-management-backup` |
 | `Schedule` | `velero.io/v1` | `open-cluster-management-backup` |
 | `ClusterVersion` | `config.openshift.io/v1` | cluster-scoped |
+| `Policy` | `policy.open-cluster-management.io/v1` | `open-cluster-management-backup` (root) / `local-cluster` (replicated) |
 
 ## Key Labels
 
