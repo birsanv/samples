@@ -631,9 +631,10 @@ while IFS='|' read -r idx cl ns name status backup os uid; do
 done <<< "$VM_TABLE"
 
 if [[ -z "$AVAIL_TABLE" ]]; then
-  warn "No VMs available to back up."
   if [[ ${#REMOVED_KEYS[@]} -gt 0 ]]; then
-    printf "Only removal was performed.\n"
+    printf "\nNo more VMs to work on. Only removal was performed.\n"
+  else
+    warn "No VMs to work on."
   fi
   exit 0
 fi

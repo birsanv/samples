@@ -13,6 +13,7 @@ BOLD="\033[1m"
 GREEN="\033[32m"
 YELLOW="\033[33m"
 RED="\033[31m"
+BLUE="\033[34m"
 CYAN="\033[36m"
 RESET="\033[0m"
 
@@ -469,6 +470,18 @@ fi
 
 run_oc() { oc "${OC_CTX[@]}" "$@"; }
 
+declare -A MC_CONTEXT_MAP=()
+
+run_oc_on_cluster() {
+  local cluster="$1"; shift
+  local ctx="${MC_CONTEXT_MAP[$cluster]:-}"
+  if [[ -n "$ctx" ]]; then
+    oc --context "$ctx" "$@"
+  else
+    run_oc "$@"
+  fi
+}
+
 header() { printf "\n${BOLD}${CYAN}=== %s ===${RESET}\n" "$1"; }
 info()   { printf "${GREEN}[OK]${RESET} %s\n" "$1"; }
 warn()   { printf "${YELLOW}[WARN]${RESET} %s\n" "$1"; }
@@ -526,34 +539,99 @@ else
 fi
 
 # ============================================================
-# 2. ManagedCluster acm-virt-config label
+# 2. ManagedClusters with acm-virt-config label
 # ============================================================
 header "2. Policy Placement (acm-virt-config label)"
 
+LOCAL_MC=""
 VIRT_CONFIG_NAME=""
-MC_NAME=""
+declare -a VIRT_CLUSTER_LIST=()
 
 if [[ "$IS_HUB" == true ]]; then
-  MC_NAME=$(run_oc get managedclusters -l local-cluster=true --no-headers 2>/dev/null | awk '{print $1;exit}' || echo "")
-  [[ -z "$MC_NAME" ]] && MC_NAME="local-cluster"
-  VIRT_CONFIG_NAME=$(run_oc get managedcluster "$MC_NAME" -o jsonpath='{.metadata.labels.acm-virt-config}' 2>/dev/null || echo "")
+  LOCAL_MC=$(run_oc get managedclusters -l local-cluster=true --no-headers 2>/dev/null | awk '{print $1;exit}' || echo "local-cluster")
+
+  VIRT_MC_JSON=$(run_oc get managedclusters -l acm-virt-config -o json 2>/dev/null || echo '{"items":[]}')
+  VIRT_CLUSTER_LIST=( $(echo "$VIRT_MC_JSON" | python3 -c "
+import sys, json
+items = json.load(sys.stdin).get('items', [])
+for mc in items:
+    print(mc['metadata']['name'])
+" 2>/dev/null) )
+
+  if [[ ${#VIRT_CLUSTER_LIST[@]} -eq 0 ]]; then
+    warn "No ManagedClusters with acm-virt-config label found."
+    printf "  Virt policies are not placed on any cluster.\n"
+    printf "  To enable: oc label managedcluster <name> acm-virt-config=acm-dr-virt-config\n"
+    add_issue "WARN" \
+      "No acm-virt-config label on any ManagedCluster. Virt policies are not placed." \
+      "oc label managedcluster <name> acm-virt-config=acm-dr-virt-config"
+  else
+    VIRT_CONFIG_NAME=$(echo "$VIRT_MC_JSON" | python3 -c "
+import sys, json
+items = json.load(sys.stdin).get('items', [])
+if items:
+    print(items[0].get('metadata', {}).get('labels', {}).get('acm-virt-config', ''))
+" 2>/dev/null || echo "")
+
+    info "${#VIRT_CLUSTER_LIST[@]} cluster(s) with acm-virt-config label"
+    for vc in "${VIRT_CLUSTER_LIST[@]}"; do
+      vc_cfg=$(echo "$VIRT_MC_JSON" | python3 -c "
+import sys, json
+name = '$vc'
+items = json.load(sys.stdin).get('items', [])
+for mc in items:
+    if mc['metadata']['name'] == name:
+        print(mc.get('metadata', {}).get('labels', {}).get('acm-virt-config', ''))
+        break
+" 2>/dev/null || echo "")
+      printf "  ${CYAN}%s${RESET}  config=%s\n" "$vc" "$vc_cfg"
+    done
+
+    # Build context map for managed clusters
+    ALL_CONTEXTS=$(oc config get-contexts -o name 2>/dev/null || echo "")
+    for vc in "${VIRT_CLUSTER_LIST[@]}"; do
+      if [[ "$vc" == "$LOCAL_MC" ]]; then
+        continue
+      fi
+      for ctx_name in $ALL_CONTEXTS; do
+        if [[ "$ctx_name" == "$vc" ]]; then
+          MC_CONTEXT_MAP["$vc"]="$ctx_name"
+          break
+        fi
+      done
+      if [[ -z "${MC_CONTEXT_MAP[$vc]:-}" ]]; then
+        for ctx_name in $ALL_CONTEXTS; do
+          if echo "$ctx_name" | grep -qi "$vc"; then
+            MC_CONTEXT_MAP["$vc"]="$ctx_name"
+            break
+          fi
+        done
+      fi
+      if [[ -n "${MC_CONTEXT_MAP[$vc]:-}" ]]; then
+        printf "  (context for %s: %s)\n" "$vc" "${MC_CONTEXT_MAP[$vc]}"
+      else
+        printf "  ${YELLOW}(no kubeconfig context for %s -- remote checks skipped)${RESET}\n" "$vc"
+      fi
+    done
+  fi
 else
   MC_JSON=$(run_oc get managedclusters --no-headers 2>/dev/null || echo "")
   if [[ -n "$MC_JSON" ]]; then
     MC_NAME=$(echo "$MC_JSON" | awk '{print $1;exit}')
     VIRT_CONFIG_NAME=$(run_oc get managedcluster "$MC_NAME" -o jsonpath='{.metadata.labels.acm-virt-config}' 2>/dev/null || echo "")
+    if [[ -n "$VIRT_CONFIG_NAME" ]]; then
+      VIRT_CLUSTER_LIST=("$MC_NAME")
+      LOCAL_MC="$MC_NAME"
+      info "acm-virt-config label found: ${VIRT_CONFIG_NAME} (on $MC_NAME)"
+    fi
   fi
-fi
-
-if [[ -z "$VIRT_CONFIG_NAME" ]]; then
-  warn "No acm-virt-config label found on ManagedCluster '${MC_NAME:-unknown}'"
-  printf "The virt DR policies are NOT placed on this cluster.\n"
-  printf "To enable: oc label managedcluster <name> acm-virt-config=acm-dr-virt-config\n"
-  add_issue "WARN" \
-    "No acm-virt-config label on ManagedCluster. Virt policies are not placed on this cluster." \
-    "oc label managedcluster ${MC_NAME:-<name>} acm-virt-config=acm-dr-virt-config"
-else
-  info "acm-virt-config label found: ${VIRT_CONFIG_NAME}"
+  if [[ -z "$VIRT_CONFIG_NAME" ]]; then
+    warn "No acm-virt-config label found."
+    printf "  To enable: oc label managedcluster <name> acm-virt-config=acm-dr-virt-config\n"
+    add_issue "WARN" \
+      "No acm-virt-config label on ManagedCluster. Virt policies are not placed on this cluster." \
+      "oc label managedcluster <name> acm-virt-config=acm-dr-virt-config"
+  fi
 fi
 
 # ============================================================
@@ -634,21 +712,52 @@ else
 fi
 
 # ============================================================
-# 4. OADP Installation
+# 4-7. OADP / DPA / BSL / Credentials (per virt-labeled cluster)
 # ============================================================
-header "4. OADP Installation"
+header "4-7. OADP Stack (per cluster)"
 
-OADP_OK=false
-if ! run_oc get namespace "$BACKUP_NS" &>/dev/null; then
-  err "Namespace $BACKUP_NS does not exist. OADP is not installed."
-  add_issue "ERROR" \
-    "OADP namespace '${BACKUP_NS}' does not exist." \
-    "Install OADP in ${BACKUP_NS} or check the backupNS setting in the config."
+if [[ ${#VIRT_CLUSTER_LIST[@]} -eq 0 ]]; then
+  printf "Skipped (no virt-labeled clusters).\n"
 else
-  info "Namespace $BACKUP_NS exists"
+  # Hub-level credential check (once)
+  if [[ -n "$CRED_HUB_SECRET" && "$IS_HUB" == true ]]; then
+    if run_oc get secret "$CRED_HUB_SECRET" -n "$BACKUP_NS" &>/dev/null; then
+      info "Hub secret '$CRED_HUB_SECRET' exists (will be copied to managed clusters)"
+    else
+      warn "Hub secret '$CRED_HUB_SECRET' NOT found in $BACKUP_NS"
+      add_issue "WARN" \
+        "Hub credentials secret '${CRED_HUB_SECRET}' missing. Managed clusters will not get storage credentials." \
+        "Create secret '${CRED_HUB_SECRET}' in ${BACKUP_NS} with storage credentials."
+    fi
+  fi
 
-  OADP_SUB=$(run_oc get subscriptions.operators.coreos.com -n "$BACKUP_NS" -o json 2>/dev/null || echo '{"items":[]}')
-  OADP_SUB_COUNT=$(echo "$OADP_SUB" | python3 -c "
+  for TC in "${VIRT_CLUSTER_LIST[@]}"; do
+    printf "\n  ${BOLD}${CYAN}--- Cluster: %s ---${RESET}\n" "$TC"
+
+    TC_IS_HUB=false
+    if [[ "$TC" == "$LOCAL_MC" ]]; then
+      TC_IS_HUB="$IS_HUB"
+    elif [[ -n "${MC_CONTEXT_MAP[$TC]:-}" ]]; then
+      if run_oc_on_cluster "$TC" get crd multiclusterhubs.operator.open-cluster-management.io &>/dev/null; then
+        TC_IS_HUB=true
+      fi
+    else
+      printf "  ${YELLOW}(no kubeconfig context -- cannot validate OADP stack remotely)${RESET}\n"
+      continue
+    fi
+
+    # --- 4. OADP Installation ---
+    printf "\n  ${BOLD}OADP Installation:${RESET}\n"
+    TC_OADP_OK=false
+
+    if ! run_oc_on_cluster "$TC" get namespace "$BACKUP_NS" &>/dev/null; then
+      err "Namespace $BACKUP_NS does not exist on '$TC'"
+      add_issue "ERROR" \
+        "OADP namespace '${BACKUP_NS}' does not exist on '${TC}'." \
+        "Install OADP in ${BACKUP_NS} on ${TC}."
+    else
+      OADP_SUB=$(run_oc_on_cluster "$TC" get subscriptions.operators.coreos.com -n "$BACKUP_NS" -o json 2>/dev/null || echo '{"items":[]}')
+      OADP_SUB_LINE1=$(echo "$OADP_SUB" | python3 -c "
 import sys, json
 items = json.load(sys.stdin).get('items', [])
 oadp = [s for s in items if s.get('spec',{}).get('name','') == 'redhat-oadp-operator']
@@ -657,44 +766,42 @@ for s in oadp:
     name = s['metadata']['name']
     channel = s.get('spec',{}).get('channel','?')
     csv = s.get('status',{}).get('installedCSV','?')
-    print(f'  {name}: channel={channel} csv={csv}')
+    print(f'    {name}: channel={channel} csv={csv}')
 " 2>/dev/null || echo "0")
 
-  OADP_SUB_LINE1=$(echo "$OADP_SUB_COUNT" | head -1)
-  OADP_SUB_DETAILS=$(echo "$OADP_SUB_COUNT" | tail -n +2)
+      SUB_COUNT=$(echo "$OADP_SUB_LINE1" | head -1)
+      SUB_DETAILS=$(echo "$OADP_SUB_LINE1" | tail -n +2)
 
-  if [[ "$OADP_SUB_LINE1" -gt 0 ]]; then
-    OADP_OK=true
-    info "OADP operator subscription found"
-    if [[ -n "$OADP_SUB_DETAILS" ]]; then
-      echo "$OADP_SUB_DETAILS"
-    fi
-  else
-    if [[ "$IS_HUB" == true ]]; then
-      warn "No OADP subscription in $BACKUP_NS -- on hub, OADP is installed via MCH backup option."
-      OADP_CSV_COUNT=$(run_oc get csv -n "$BACKUP_NS" --no-headers 2>/dev/null | grep -c "oadp" || echo "0")
-      if [[ "$OADP_CSV_COUNT" -gt 0 ]]; then
-        OADP_OK=true
-        info "OADP CSV found (installed by backup chart)"
+      if [[ "$SUB_COUNT" -gt 0 ]]; then
+        TC_OADP_OK=true
+        info "OADP subscription found on '$TC'"
+        [[ -n "$SUB_DETAILS" ]] && echo "$SUB_DETAILS"
+      else
+        OADP_CSV_COUNT=$(run_oc_on_cluster "$TC" get csv -n "$BACKUP_NS" --no-headers 2>/dev/null | grep -c "oadp" || true)
+        if [[ "$OADP_CSV_COUNT" -gt 0 ]]; then
+          TC_OADP_OK=true
+          info "OADP CSV found on '$TC' (installed by MCH/policy)"
+        else
+          if [[ "$TC_IS_HUB" == true ]]; then
+            err "OADP not installed on '$TC' (hub). Enable cluster-backup on MCH."
+            add_issue "ERROR" \
+              "OADP not installed on '${TC}' (hub)." \
+              "Enable cluster-backup on the MCH of '${TC}'."
+          else
+            err "OADP not installed on '$TC'"
+            add_issue "ERROR" \
+              "OADP not installed on '${TC}'." \
+              "The acm-dr-virt-install policy should install OADP. Check policy compliance."
+          fi
+        fi
       fi
-    else
-      err "No OADP subscription in $BACKUP_NS"
-      add_issue "ERROR" \
-        "OADP operator is not installed in ${BACKUP_NS}." \
-        "The acm-dr-virt-install policy should install OADP. Check policy compliance."
     fi
-  fi
-fi
 
-# ============================================================
-# 5. DataProtectionApplication (DPA)
-# ============================================================
-header "5. DataProtectionApplication"
-
-DPA_FOUND=false
-if [[ "$OADP_OK" == true ]]; then
-  DPA_JSON=$(run_oc get dataprotectionapplications.oadp.openshift.io -n "$BACKUP_NS" -o json 2>/dev/null || echo '{"items":[]}')
-  DPA_STATUS=$(echo "$DPA_JSON" | python3 -c "
+    # --- 5. DataProtectionApplication ---
+    printf "\n  ${BOLD}DataProtectionApplication:${RESET}\n"
+    if [[ "$TC_OADP_OK" == true ]]; then
+      DPA_JSON=$(run_oc_on_cluster "$TC" get dataprotectionapplications.oadp.openshift.io -n "$BACKUP_NS" -o json 2>/dev/null || echo '{"items":[]}')
+      DPA_STATUS=$(echo "$DPA_JSON" | python3 -c "
 import sys, json
 items = json.load(sys.stdin).get('items', [])
 print(len(items))
@@ -709,63 +816,65 @@ for d in items:
     has_kubevirt = 'kubevirt' in plugins
     has_csi = 'csi' in plugins
     status_str = 'Reconciled' if reconciled else 'NOT reconciled'
-    print(f'  {name}: {status_str}  plugins={plugins}  nodeAgent={na_enabled}/{uploader}')
+    print(f'    {name}: {status_str}  plugins={plugins}  nodeAgent={na_enabled}/{uploader}')
     if not has_kubevirt:
-        print(f'  WARN: kubevirt plugin MISSING')
+        print(f'    WARN: kubevirt plugin MISSING')
     if not has_csi:
-        print(f'  WARN: csi plugin MISSING')
+        print(f'    WARN: csi plugin MISSING')
     if not na_enabled:
-        print(f'  WARN: nodeAgent not enabled (required for DataMover)')
+        print(f'    WARN: nodeAgent not enabled (required for DataMover)')
     if uploader != 'kopia':
-        print(f'  WARN: uploaderType should be kopia, got {uploader}')
+        print(f'    WARN: uploaderType should be kopia, got {uploader}')
 " 2>/dev/null || echo "0")
 
-  DPA_COUNT=$(echo "$DPA_STATUS" | head -1)
-  DPA_DETAILS=$(echo "$DPA_STATUS" | tail -n +2)
+      DPA_COUNT=$(echo "$DPA_STATUS" | head -1)
+      DPA_DETAILS=$(echo "$DPA_STATUS" | tail -n +2)
 
-  if [[ "$DPA_COUNT" -gt 0 ]]; then
-    DPA_FOUND=true
-    info "DataProtectionApplication found ($DPA_COUNT)"
-    echo "$DPA_DETAILS"
+      if [[ "$DPA_COUNT" -gt 0 ]]; then
+        info "DPA found on '$TC' ($DPA_COUNT)"
+        echo "$DPA_DETAILS"
 
-    if echo "$DPA_DETAILS" | grep -q "WARN: kubevirt plugin MISSING"; then
-      add_issue "ERROR" \
-        "DPA is missing the 'kubevirt' plugin. VM backups require this plugin." \
-        "Add 'kubevirt' to spec.configuration.velero.defaultPlugins in the DPA."
+        if echo "$DPA_DETAILS" | grep -q "WARN: kubevirt plugin MISSING"; then
+          add_issue "ERROR" \
+            "DPA on '${TC}' is missing 'kubevirt' plugin." \
+            "Add 'kubevirt' to DPA defaultPlugins on ${TC}."
+        fi
+        if echo "$DPA_DETAILS" | grep -q "WARN: csi plugin MISSING"; then
+          add_issue "WARN" \
+            "DPA on '${TC}' is missing 'csi' plugin." \
+            "Add 'csi' to DPA defaultPlugins on ${TC}."
+        fi
+        if echo "$DPA_DETAILS" | grep -q "WARN: nodeAgent not enabled"; then
+          add_issue "WARN" \
+            "DPA nodeAgent not enabled on '${TC}'." \
+            "Set nodeAgent.enable=true and uploaderType=kopia in the DPA on ${TC}."
+        fi
+        if echo "$DPA_DETAILS" | grep -q "NOT reconciled"; then
+          add_issue "ERROR" \
+            "DPA on '${TC}' is NOT reconciled." \
+            "Check DPA status and OADP logs on ${TC}."
+        fi
+      else
+        err "No DPA on '$TC' in $BACKUP_NS"
+        if [[ "$TC_IS_HUB" == true ]]; then
+          add_issue "ERROR" \
+            "No DPA on '${TC}' (hub). Create DPA manually or via MCH backup." \
+            "Enable cluster-backup on MCH of '${TC}' and patch the DPA."
+        else
+          add_issue "ERROR" \
+            "No DPA on '${TC}'." \
+            "The acm-dr-virt-install policy should create it. Check policy compliance."
+        fi
+      fi
+    else
+      printf "    Skipped (OADP not installed on '$TC').\n"
     fi
-    if echo "$DPA_DETAILS" | grep -q "WARN: csi plugin MISSING"; then
-      add_issue "WARN" \
-        "DPA is missing the 'csi' plugin. CSI snapshots require this plugin." \
-        "Add 'csi' to spec.configuration.velero.defaultPlugins in the DPA."
-    fi
-    if echo "$DPA_DETAILS" | grep -q "WARN: nodeAgent not enabled"; then
-      add_issue "WARN" \
-        "DPA nodeAgent is not enabled. DataMover (snapshotMoveData) requires nodeAgent." \
-        "Set spec.configuration.nodeAgent.enable=true and uploaderType=kopia in the DPA."
-    fi
-    if echo "$DPA_DETAILS" | grep -q "NOT reconciled"; then
-      add_issue "ERROR" \
-        "DPA is not in Reconciled state." \
-        "Check DPA status and OADP operator logs."
-    fi
-  else
-    err "No DataProtectionApplication in $BACKUP_NS"
-    add_issue "ERROR" \
-      "No DataProtectionApplication found in ${BACKUP_NS}." \
-      "The acm-dr-virt-install policy should create it. Check policy compliance."
-  fi
-else
-  printf "Skipped (OADP not installed).\n"
-fi
 
-# ============================================================
-# 6. BackupStorageLocation
-# ============================================================
-header "6. Backup Storage Location (BSL)"
-
-BSL_OK=false
-BSL_JSON=$(run_oc get backupstoragelocations.velero.io -n "$BACKUP_NS" -o json 2>/dev/null || echo '{"items":[]}')
-BSL_INFO=$(echo "$BSL_JSON" | python3 -c "
+    # --- 6. BackupStorageLocation ---
+    printf "\n  ${BOLD}BackupStorageLocation:${RESET}\n"
+    if [[ "$TC_OADP_OK" == true ]]; then
+      BSL_JSON=$(run_oc_on_cluster "$TC" get backupstoragelocations.velero.io -n "$BACKUP_NS" -o json 2>/dev/null || echo '{"items":[]}')
+      BSL_INFO=$(echo "$BSL_JSON" | python3 -c "
 import sys, json
 items = json.load(sys.stdin).get('items', [])
 avail = 0
@@ -773,61 +882,51 @@ print(len(items))
 for b in items:
     name = b['metadata']['name']
     phase = b.get('status', {}).get('phase', 'Unknown')
-    print(f'  {name}: {phase}')
+    print(f'    {name}: {phase}')
     if phase == 'Available':
         avail += 1
 print(f'available={avail}')
 " 2>/dev/null || echo "0")
 
-BSL_COUNT=$(echo "$BSL_INFO" | head -1)
-BSL_DETAILS=$(echo "$BSL_INFO" | sed -n '2,/^available=/p' | grep -v "^available=")
-BSL_AVAIL=$(echo "$BSL_INFO" | grep "^available=" | cut -d= -f2)
+      BSL_COUNT=$(echo "$BSL_INFO" | head -1)
+      BSL_DETAILS=$(echo "$BSL_INFO" | sed -n '2,/^available=/p' | grep -v "^available=")
+      BSL_AVAIL=$(echo "$BSL_INFO" | grep "^available=" | cut -d= -f2)
 
-if [[ "$BSL_COUNT" -gt 0 ]]; then
-  echo "$BSL_DETAILS"
-  if [[ "${BSL_AVAIL:-0}" -gt 0 ]]; then
-    BSL_OK=true
-    info "$BSL_AVAIL BSL(s) Available"
-  else
-    err "No BSL in Available phase"
-    add_issue "ERROR" \
-      "No BackupStorageLocation is Available in ${BACKUP_NS}." \
-      "Check BSL config, credentials, and bucket connectivity."
-  fi
-else
-  err "No BackupStorageLocation found in $BACKUP_NS"
-  add_issue "ERROR" \
-    "No BackupStorageLocation found in ${BACKUP_NS}." \
-    "DPA or OADP config issue."
-fi
+      if [[ "$BSL_COUNT" -gt 0 ]]; then
+        [[ -n "$BSL_DETAILS" ]] && echo "$BSL_DETAILS"
+        if [[ "${BSL_AVAIL:-0}" -gt 0 ]]; then
+          info "$BSL_AVAIL BSL(s) Available on '$TC'"
+        else
+          err "No BSL in Available phase on '$TC'"
+          add_issue "ERROR" \
+            "No BSL Available on '${TC}'." \
+            "Check BSL config, credentials, and bucket connectivity on ${TC}."
+        fi
+      else
+        err "No BSL found on '$TC'"
+        add_issue "ERROR" \
+          "No BSL found on '${TC}'." \
+          "DPA or OADP config issue on ${TC}."
+      fi
+    else
+      printf "    Skipped (OADP not installed on '$TC').\n"
+    fi
 
-# ============================================================
-# 7. Velero Credentials Secret
-# ============================================================
-header "7. Velero Credentials"
-
-if [[ -n "$CRED_SECRET" ]]; then
-  if run_oc get secret "$CRED_SECRET" -n "$BACKUP_NS" &>/dev/null; then
-    info "Credentials secret '$CRED_SECRET' exists in $BACKUP_NS"
-  else
-    err "Credentials secret '$CRED_SECRET' NOT found in $BACKUP_NS"
-    add_issue "ERROR" \
-      "Velero credentials secret '${CRED_SECRET}' missing from ${BACKUP_NS}." \
-      "The install policy copies it from hub secret '${CRED_HUB_SECRET:-?}'. Check the policy or create the secret."
-  fi
-else
-  warn "credentials_name not set in config. Skipping secret check."
-fi
-
-if [[ -n "$CRED_HUB_SECRET" && "$IS_HUB" == true ]]; then
-  if run_oc get secret "$CRED_HUB_SECRET" -n "$BACKUP_NS" &>/dev/null; then
-    info "Hub secret '$CRED_HUB_SECRET' exists (will be copied to managed clusters)"
-  else
-    warn "Hub secret '$CRED_HUB_SECRET' NOT found in $BACKUP_NS"
-    add_issue "WARN" \
-      "Hub credentials secret '${CRED_HUB_SECRET}' missing. Managed clusters will not get storage credentials." \
-      "Create secret '${CRED_HUB_SECRET}' in ${BACKUP_NS} with storage credentials."
-  fi
+    # --- 7. Velero Credentials ---
+    printf "\n  ${BOLD}Velero Credentials:${RESET}\n"
+    if [[ -n "$CRED_SECRET" ]]; then
+      if run_oc_on_cluster "$TC" get secret "$CRED_SECRET" -n "$BACKUP_NS" &>/dev/null; then
+        info "Credentials secret '$CRED_SECRET' exists on '$TC'"
+      else
+        err "Credentials secret '$CRED_SECRET' NOT found on '$TC'"
+        add_issue "ERROR" \
+          "Velero credentials secret '${CRED_SECRET}' missing on '${TC}'." \
+          "The install policy copies it from hub. Check policy compliance on ${TC}."
+      fi
+    else
+      printf "    credentials_name not set in config. Skipping.\n"
+    fi
+  done
 fi
 
 # ============================================================
@@ -865,20 +964,37 @@ else
 fi
 
 # ============================================================
-# 9. VirtualMachines with backup label
+# 9-11. VMs / Schedules / Backups (per virt-labeled cluster)
 # ============================================================
-header "9. VirtualMachines with backup label"
-
-VM_CRD_EXISTS=false
-if run_oc get crd virtualmachines.kubevirt.io &>/dev/null; then
-  VM_CRD_EXISTS=true
-fi
+header "9-11. VMs, Schedules & Backups (per cluster)"
 
 VM_LABEL="cluster.open-cluster-management.io/backup-vm"
+SCHED_LABEL="cluster.open-cluster-management.io/backup-schedule-type=kubevirt"
+BKP_LABEL="cluster.open-cluster-management.io/backup-schedule-type=kubevirt"
+TOTAL_VM_COUNT=0
 
-if [[ "$VM_CRD_EXISTS" == true ]]; then
-  VM_JSON=$(run_oc get virtualmachines.kubevirt.io --all-namespaces -l "$VM_LABEL" -o json 2>/dev/null || echo '{"items":[]}')
-  VM_INFO=$(echo "$VM_JSON" | python3 -c "
+if [[ ${#VIRT_CLUSTER_LIST[@]} -eq 0 ]]; then
+  printf "Skipped (no virt-labeled clusters).\n"
+else
+  for TC in "${VIRT_CLUSTER_LIST[@]}"; do
+    printf "\n  ${BOLD}${CYAN}--- Cluster: %s ---${RESET}\n" "$TC"
+
+    if [[ "$TC" != "$LOCAL_MC" && -z "${MC_CONTEXT_MAP[$TC]:-}" ]]; then
+      printf "  ${YELLOW}(no kubeconfig context -- cannot check VMs/schedules remotely)${RESET}\n"
+      continue
+    fi
+
+    # --- 9. VMs with backup label ---
+    printf "\n  ${BOLD}VirtualMachines with backup label:${RESET}\n"
+    TC_VM_CRD=false
+    if run_oc_on_cluster "$TC" get crd virtualmachines.kubevirt.io &>/dev/null; then
+      TC_VM_CRD=true
+    fi
+
+    TC_VM_COUNT=0
+    if [[ "$TC_VM_CRD" == true ]]; then
+      VM_JSON=$(run_oc_on_cluster "$TC" get virtualmachines.kubevirt.io --all-namespaces -l "$VM_LABEL" -o json 2>/dev/null || echo '{"items":[]}')
+      VM_INFO=$(echo "$VM_JSON" | python3 -c "
 import sys, json
 items = json.load(sys.stdin).get('items', [])
 print(len(items))
@@ -888,35 +1004,31 @@ for vm in items:
     ns = vm['metadata']['namespace']
     uid = vm['metadata'].get('uid', '?')
     cron = vm['metadata'].get('labels', {}).get('cluster.open-cluster-management.io/backup-vm', '?')
-    print(f'  {ns}/{name}  uid={uid}  schedule={cron}')
+    print(f'    {ns}/{name}  uid={uid}  schedule={cron}')
     crons.setdefault(cron, []).append(f'{ns}/{name}')
 print('---')
 for c, vms in sorted(crons.items()):
-    print(f'  schedule \"{c}\": {len(vms)} VM(s)')
+    print(f'    schedule \"{c}\": {len(vms)} VM(s)')
 " 2>/dev/null || echo "0")
 
-  VM_COUNT=$(echo "$VM_INFO" | head -1)
-  VM_DETAILS=$(echo "$VM_INFO" | tail -n +2)
+      TC_VM_COUNT=$(echo "$VM_INFO" | head -1)
+      VM_DETAILS=$(echo "$VM_INFO" | tail -n +2)
 
-  if [[ "$VM_COUNT" -gt 0 ]]; then
-    info "$VM_COUNT VM(s) labeled for backup"
-    echo "$VM_DETAILS"
-  else
-    warn "No VirtualMachines found with label $VM_LABEL"
-    printf "To back up a VM, add label: oc label vm <name> -n <ns> %s=<cron-name>\n" "$VM_LABEL"
-  fi
-else
-  warn "VirtualMachine CRD not installed (kubevirt.io not found)"
-fi
+      if [[ "$TC_VM_COUNT" -gt 0 ]]; then
+        info "$TC_VM_COUNT VM(s) labeled for backup on '$TC'"
+        echo "$VM_DETAILS"
+        TOTAL_VM_COUNT=$((TOTAL_VM_COUNT + TC_VM_COUNT))
+      else
+        printf "    No VMs with backup label on '$TC'\n"
+      fi
+    else
+      printf "    VirtualMachine CRD not installed on '$TC'\n"
+    fi
 
-# ============================================================
-# 10. Velero Schedules (kubevirt)
-# ============================================================
-header "10. Velero Backup Schedules (kubevirt)"
-
-SCHED_LABEL="cluster.open-cluster-management.io/backup-schedule-type=kubevirt"
-SCH_JSON=$(run_oc get schedules.velero.io -n "$BACKUP_NS" -l "$SCHED_LABEL" -o json 2>/dev/null || echo '{"items":[]}')
-SCH_INFO=$(echo "$SCH_JSON" | python3 -c "
+    # --- 10. Velero Schedules ---
+    printf "\n  ${BOLD}Velero Backup Schedules (kubevirt):${RESET}\n"
+    TC_SCH_JSON=$(run_oc_on_cluster "$TC" get schedules.velero.io -n "$BACKUP_NS" -l "$SCHED_LABEL" -o json 2>/dev/null || echo '{"items":[]}')
+    TC_SCH_INFO=$(echo "$TC_SCH_JSON" | python3 -c "
 import sys, json
 items = json.load(sys.stdin).get('items', [])
 print(len(items))
@@ -930,66 +1042,99 @@ for s in items:
     ann = s.get('metadata', {}).get('annotations', {})
     vm_count = sum(1 for k, v in ann.items() if '--' in v)
     status = 'Paused' if paused else phase
-    print(f'  {name}: {status}  cron=\"{cron}\"  lastBackup={last}  VMs={vm_count}  ns={ns_list}')
+    print(f'    {name}: {status}  cron=\"{cron}\"  lastBackup={last}  VMs={vm_count}  ns={ns_list}')
 " 2>/dev/null || echo "0")
 
-SCH_COUNT=$(echo "$SCH_INFO" | head -1)
-SCH_DETAILS=$(echo "$SCH_INFO" | tail -n +2)
+    TC_SCH_COUNT=$(echo "$TC_SCH_INFO" | head -1)
+    TC_SCH_DETAILS=$(echo "$TC_SCH_INFO" | tail -n +2)
 
-if [[ "$SCH_COUNT" -gt 0 ]]; then
-  info "$SCH_COUNT kubevirt velero schedule(s) found"
-  echo "$SCH_DETAILS"
-else
-  if [[ "$VM_CRD_EXISTS" == true && "$VM_COUNT" -gt 0 ]]; then
-    warn "No kubevirt velero schedules found, but VMs with backup label exist."
-    add_issue "WARN" \
-      "VMs have backup labels but no velero Schedule exists. The acm-dr-virt-backup policy may not be compliant." \
-      "Check the acm-dr-virt-backup policy status."
-  else
-    printf "No kubevirt velero schedules found.\n"
-  fi
-fi
+    if [[ "$TC_SCH_COUNT" -gt 0 ]]; then
+      info "$TC_SCH_COUNT kubevirt schedule(s) on '$TC'"
+      echo "$TC_SCH_DETAILS"
+    else
+      if [[ "$TC_VM_COUNT" -gt 0 ]]; then
+        warn "No kubevirt schedules on '$TC', but VMs with backup label exist."
+        add_issue "WARN" \
+          "VMs have backup labels on '${TC}' but no velero Schedule exists." \
+          "Check the acm-dr-virt-backup policy status on ${TC}."
+      else
+        printf "    No kubevirt schedules on '$TC'\n"
+      fi
+    fi
 
-# ============================================================
-# 11. Latest Backup Status
-# ============================================================
-header "11. Latest Backup Status"
-
-BKP_LABEL="cluster.open-cluster-management.io/backup-schedule-type=kubevirt"
-BKP_JSON=$(run_oc get backups.velero.io -n "$BACKUP_NS" -l "$BKP_LABEL" -o json 2>/dev/null || echo '{"items":[]}')
-BKP_INFO=$(echo "$BKP_JSON" | python3 -c "
+    # --- 11. Latest Backup (per active schedule) ---
+    printf "\n  ${BOLD}Latest Backup (per active schedule):${RESET}\n"
+    ACTIVE_SCHEDULES=$(echo "$TC_SCH_JSON" | python3 -c "
 import sys, json
 items = json.load(sys.stdin).get('items', [])
-items.sort(key=lambda b: b.get('status',{}).get('startTimestamp',''), reverse=True)
-print(len(items))
-for b in items[:10]:
+for s in items:
+    print(s['metadata']['name'])
+" 2>/dev/null || echo "")
+
+    if [[ -z "$ACTIVE_SCHEDULES" ]]; then
+      printf "    No active schedules on '$TC'\n"
+      continue
+    fi
+
+    TC_BKP_JSON=$(run_oc_on_cluster "$TC" get backups.velero.io -n "$BACKUP_NS" -l "$BKP_LABEL" -o json 2>/dev/null || echo '{"items":[]}')
+    TC_BKP_INFO=$(echo "$TC_BKP_JSON" | ACTIVE_SCHEDULES="$ACTIVE_SCHEDULES" python3 -c "
+import sys, json, os
+items = json.load(sys.stdin).get('items', [])
+active = set(os.environ.get('ACTIVE_SCHEDULES', '').split())
+
+by_schedule = {}
+for b in items:
+    sch = b['metadata'].get('labels', {}).get('velero.io/schedule-name', '')
+    if not sch or sch not in active:
+        continue
+    ts = b.get('status', {}).get('startTimestamp', '')
+    if sch not in by_schedule or ts > by_schedule[sch].get('status', {}).get('startTimestamp', ''):
+        by_schedule[sch] = b
+
+latest = sorted(by_schedule.values(),
+    key=lambda b: b.get('status', {}).get('startTimestamp', ''), reverse=True)
+BLUE = '\033[34m'
+YELLOW = '\033[33m'
+RED = '\033[31m'
+RESET = '\033[0m'
+print(len(latest))
+for b in latest:
     name = b['metadata']['name']
     phase = b.get('status', {}).get('phase', 'Unknown')
     started = b.get('status', {}).get('startTimestamp', '?')
     errors = b.get('status', {}).get('errors', 0)
     warnings = b.get('status', {}).get('warnings', 0)
     sch = b['metadata'].get('labels', {}).get('velero.io/schedule-name', '?')
-    flag = ''
-    if phase not in ('Completed',):
-        flag = '  <<<'
-    print(f'  {name}: {phase}  started={started}  errors={errors}  warnings={warnings}  schedule={sch}{flag}')
+    if phase == 'Completed':
+        bullet = f'{BLUE}\u25cf{RESET}'
+    elif phase == 'PartiallyFailed':
+        bullet = f'{YELLOW}\u25cf{RESET}'
+    else:
+        bullet = f'{RED}\u25cf{RESET}'
+    print(f'    {bullet} {name}: {phase}  started={started}  errors={errors}  warnings={warnings}  schedule={sch}')
 " 2>/dev/null || echo "0")
 
-BKP_COUNT=$(echo "$BKP_INFO" | head -1)
-BKP_DETAILS=$(echo "$BKP_INFO" | tail -n +2)
+    TC_BKP_COUNT=$(echo "$TC_BKP_INFO" | head -1)
+    TC_BKP_DETAILS=$(echo "$TC_BKP_INFO" | tail -n +2)
 
-if [[ "$BKP_COUNT" -gt 0 ]]; then
-  info "$BKP_COUNT kubevirt backup(s) found (showing latest 10)"
-  echo "$BKP_DETAILS"
+    if [[ "$TC_BKP_COUNT" -gt 0 ]]; then
+      info "Latest backup for $TC_BKP_COUNT schedule(s) on '$TC'"
+      echo "$TC_BKP_DETAILS"
 
-  FAILED_BKPS=$(echo "$BKP_DETAILS" | grep -c "<<<" || true)
-  if [[ "$FAILED_BKPS" -gt 0 ]]; then
-    add_issue "WARN" \
-      "$FAILED_BKPS backup(s) are not in Completed phase. Check DataUpload and velero logs." \
-      "oc get dataupload -n ${BACKUP_NS}; oc logs -n ${BACKUP_NS} -l app.kubernetes.io/name=velero"
+      FAILED_BKPS=$(echo "$TC_BKP_DETAILS" | grep -cv "Completed" || true)
+      if [[ "$FAILED_BKPS" -gt 0 ]]; then
+        add_issue "WARN" \
+          "$FAILED_BKPS backup(s) not Completed on '${TC}'." \
+          "oc get dataupload -n ${BACKUP_NS}; oc logs -n ${BACKUP_NS} -l app.kubernetes.io/name=velero (on ${TC})"
+      fi
+    else
+      warn "Active schedules on '$TC' but no backups found yet."
+    fi
+  done
+
+  if [[ "$TOTAL_VM_COUNT" -eq 0 ]]; then
+    warn "No VMs with backup label found on any virt-labeled cluster."
   fi
-else
-  printf "No kubevirt backups found.\n"
 fi
 
 # ============================================================
@@ -1072,8 +1217,13 @@ if run_oc get crd policies.policy.open-cluster-management.io &>/dev/null; then
 fi
 
 if [[ "$POLICY_CRD_EXISTS" == true ]]; then
-  LOCAL_CLUSTER_NAME=$(run_oc get managedclusters -l local-cluster=true --no-headers 2>/dev/null | awk '{print $1;exit}' || echo "")
-  [[ -z "$LOCAL_CLUSTER_NAME" ]] && LOCAL_CLUSTER_NAME="local-cluster"
+  VIRT_CLUSTERS=$(run_oc get managedclusters -l acm-virt-config --no-headers 2>/dev/null | awk '{print $1}' || echo "")
+  if [[ -z "$VIRT_CLUSTERS" ]]; then
+    warn "No ManagedClusters with acm-virt-config label found."
+    printf "  Virt policies are not placed on any cluster.\n"
+  else
+    printf "Clusters with acm-virt-config label: %s\n\n" "$(echo $VIRT_CLUSTERS | tr '\n' ' ')"
+  fi
 
   for POLICY_NAME in acm-dr-virt-install acm-dr-virt-backup acm-dr-virt-restore; do
     printf "\n${BOLD}%s:${RESET}\n" "$POLICY_NAME"
@@ -1091,13 +1241,39 @@ print(p.get('status', {}).get('compliant', 'Unknown'))
 " 2>/dev/null || echo "Unknown")
     printf "  Root policy compliance: %s\n" "$ROOT_COMPLIANCE"
 
-    REPL_POLICY=$(run_oc get policy.policy.open-cluster-management.io "${BACKUP_NS}.${POLICY_NAME}" -n "$LOCAL_CLUSTER_NAME" -o json 2>/dev/null || echo "")
-    if [[ -z "$REPL_POLICY" ]]; then
-      printf "  (replicated policy not found in ${LOCAL_CLUSTER_NAME} -- policy may not be placed here)\n"
+    echo "$ROOT_POLICY" | python3 -c "
+import sys, json
+p = json.load(sys.stdin)
+cluster_statuses = p.get('status', {}).get('status', [])
+if cluster_statuses:
+    for cs in cluster_statuses:
+        cname = cs.get('clustername', '?')
+        ccomp = cs.get('compliant', '?')
+        icon = 'OK' if ccomp == 'Compliant' else 'ISSUE'
+        print(f'  [{icon}] {cname}: {ccomp}')
+" 2>/dev/null || true
+
+    if [[ -z "$VIRT_CLUSTERS" ]]; then
+      printf "  (no clusters to check)\n"
       continue
     fi
 
-    echo "$REPL_POLICY" | python3 -c "
+    for TARGET_CLUSTER in $VIRT_CLUSTERS; do
+      printf "\n  ${CYAN}Cluster: %s${RESET}\n" "$TARGET_CLUSTER"
+
+      REPL_POLICY=$(run_oc get policy.policy.open-cluster-management.io "${BACKUP_NS}.${POLICY_NAME}" -n "$TARGET_CLUSTER" -o json 2>/dev/null || echo "")
+      if [[ -z "$REPL_POLICY" ]]; then
+        printf "    (replicated policy not found in namespace ${TARGET_CLUSTER})\n"
+        continue
+      fi
+
+      CLUSTER_COMPLIANCE=$(echo "$REPL_POLICY" | python3 -c "
+import sys, json
+p = json.load(sys.stdin)
+print(p.get('status', {}).get('compliant', 'Unknown'))
+" 2>/dev/null || echo "Unknown")
+
+      echo "$REPL_POLICY" | python3 -c "
 import sys, json
 p = json.load(sys.stdin)
 details = p.get('status', {}).get('details', [])
@@ -1109,13 +1285,13 @@ for d in details:
     if conds:
         msg = conds[0].get('message', '')[:120]
     status_icon = 'OK' if comp == 'Compliant' else 'ISSUE'
-    print(f'  [{status_icon}] {tname}: {comp}')
+    print(f'    [{status_icon}] {tname}: {comp}')
     if comp != 'Compliant' and msg:
-        print(f'        {msg}')
+        print(f'          {msg}')
 " 2>/dev/null || true
 
-    if [[ "$ROOT_COMPLIANCE" == "NonCompliant" ]]; then
-      VIOLATION_TEMPLATES=$(echo "$REPL_POLICY" | python3 -c "
+      if [[ "$CLUSTER_COMPLIANCE" == "NonCompliant" ]]; then
+        VIOLATION_TEMPLATES=$(echo "$REPL_POLICY" | python3 -c "
 import sys, json
 p = json.load(sys.stdin)
 details = p.get('status', {}).get('details', [])
@@ -1123,16 +1299,17 @@ violated = [d.get('templateMeta', {}).get('name', '?') for d in details if d.get
 print(', '.join(violated))
 " 2>/dev/null || echo "?")
 
-      if [[ "$POLICY_NAME" == "acm-dr-virt-install" ]]; then
-        add_issue "ERROR" \
-          "Policy '${POLICY_NAME}' is NonCompliant. Violating templates: ${VIOLATION_TEMPLATES}." \
-          "Check OADP installation, DPA config, and credential secrets."
-      else
-        add_issue "WARN" \
-          "Policy '${POLICY_NAME}' is NonCompliant. Violating templates: ${VIOLATION_TEMPLATES}." \
-          "See template details above for specifics."
+        if [[ "$POLICY_NAME" == "acm-dr-virt-install" ]]; then
+          add_issue "ERROR" \
+            "Policy '${POLICY_NAME}' is NonCompliant on '${TARGET_CLUSTER}'. Violating: ${VIOLATION_TEMPLATES}." \
+            "Check OADP installation, DPA config, and credential secrets on ${TARGET_CLUSTER}."
+        else
+          add_issue "WARN" \
+            "Policy '${POLICY_NAME}' is NonCompliant on '${TARGET_CLUSTER}'. Violating: ${VIOLATION_TEMPLATES}." \
+            "See template details above for specifics."
+        fi
       fi
-    fi
+    done
   done
 else
   warn "Policy CRD not found. Cannot check policy compliance."
@@ -1145,7 +1322,11 @@ header "Summary"
 
 if [[ ${#ISSUES[@]} -eq 0 ]]; then
   printf "\n${GREEN}No configuration issues detected.${RESET}\n\n"
-  printf "Cluster ${BOLD}%s${RESET} is correctly configured for ACM virt VM backup/restore.\n" "$CLUSTER_ID"
+  if [[ ${#VIRT_CLUSTER_LIST[@]} -gt 0 ]]; then
+    printf "All virt-labeled clusters (%s) are correctly configured for ACM VM backup/restore.\n" "${VIRT_CLUSTER_LIST[*]}"
+  else
+    printf "Cluster ${BOLD}%s${RESET} has no virt-labeled ManagedClusters.\n" "$CLUSTER_ID"
+  fi
   exit 0
 fi
 
