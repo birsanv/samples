@@ -636,8 +636,10 @@ if [[ -z "$AVAIL_TABLE" ]]; then
   else
     warn "No VMs to work on."
   fi
-  exit 0
+  SKIP_TO_STATUS=true
 fi
+
+if [[ "${SKIP_TO_STATUS:-false}" != true ]]; then
 
 AVAIL_COUNT=$(echo "$AVAIL_TABLE" | wc -l | tr -d ' ')
 AVAIL_CLUSTERS=$(echo "$AVAIL_TABLE" | while IFS='|' read -r _ acl _ _ _ _ _ _; do echo "$acl"; done | sort -u)
@@ -672,11 +674,13 @@ read -r SELECTION </dev/tty
 if [[ -z "$SELECTION" ]]; then
   if [[ ${#REMOVED_KEYS[@]} -gt 0 ]]; then
     printf "\nNo VMs selected for backup. Only removal was performed.\n"
-    exit 0
+  else
+    warn "No VMs selected."
   fi
-  warn "No VMs selected. Exiting."
-  exit 0
+  SKIP_TO_STATUS=true
 fi
+
+if [[ "${SKIP_TO_STATUS:-false}" != true ]]; then
 
 SEL_RESOLVED=$(resolve_selection "$SELECTION" "$AVAIL_TABLE" "$AVAIL_COUNT")
 
@@ -1539,10 +1543,165 @@ else
   printf "  Once the schedule is active, backups start according to the cron expression.\n"
 fi
 
-printf "\n${BOLD}Useful commands (run on the target cluster):${RESET}\n"
-printf "  # Check velero schedules\n"
-printf "  oc get schedules.velero.io -n %s -l cluster.open-cluster-management.io/backup-schedule-type=kubevirt\n\n" "$OADP_NS"
-printf "  # Check latest backup\n"
-printf "  oc get backups.velero.io -n %s -l cluster.open-cluster-management.io/backup-schedule-type=kubevirt --sort-by=.status.startTimestamp\n\n" "$OADP_NS"
-printf "  # Check policy compliance (on hub)\n"
+fi  # end SKIP_TO_STATUS guard (selection)
+fi  # end SKIP_TO_STATUS guard (no available VMs)
+
+# ============================================================
+# 9. Backup & DataUpload status (from hub backups)
+# ============================================================
+header "Backup Status"
+
+# Ensure variables are set even if we skipped selection
+OADP_NS="${OADP_NS:-open-cluster-management-backup}"
+if [[ -z "${TARGET_CLUSTERS:-}" ]]; then
+  TARGET_CLUSTERS=$(run_oc get managedclusters -l acm-virt-config --no-headers 2>/dev/null | awk '{print $1}' || echo "")
+fi
+
+BKP_SCHED_LABEL="cluster.open-cluster-management.io/backup-schedule-type=kubevirt"
+
+# All kubevirt backups live on the hub (the hub's OADP runs the schedules).
+# Each backup's annotations tell us which cluster + schedule it belongs to.
+# The schedule name encodes the source cluster ID and cron name.
+BKP_OUT=$(run_oc get backups.velero.io -n "$OADP_NS" -l "$BKP_SCHED_LABEL" -o json 2>/dev/null || echo '{"items":[]}')
+BKP_TABLE=$(echo "$BKP_OUT" | python3 -c "
+import sys, json, re
+
+items = json.load(sys.stdin).get('items', [])
+if not items:
+    print('__NONE__')
+    sys.exit(0)
+
+BLUE = '\033[34m'; YELLOW = '\033[33m'; RED = '\033[31m'; CYAN = '\033[36m'
+BOLD = '\033[1m'; DIM = '\033[2m'; RESET = '\033[0m'
+
+rows = []
+for b in items:
+    name = b['metadata']['name']
+    phase = b.get('status', {}).get('phase', 'Unknown')
+    started = b.get('status', {}).get('startTimestamp', '')
+    errs = b.get('status', {}).get('errors', 0)
+    warns = b.get('status', {}).get('warnings', 0)
+    sch = b['metadata'].get('labels', {}).get('velero.io/schedule-name', '?')
+
+    labels = b['metadata'].get('labels', {})
+    cluster_id = labels.get('cluster.open-cluster-management.io/backup-cluster', '?')
+
+    # Extract schedule cron name from schedule name
+    sched_name = sch
+    # acm-rho-virt-schedule-<cron_name>-<clusterid>
+    m = re.match(r'acm-rho-virt-schedule-(.+)-[a-f0-9]{8,}$', sch)
+    if m:
+        sched_name = m.group(1)
+
+    rows.append((cluster_id, sched_name, started, name, phase, errs, warns, sch))
+
+# Sort by cluster_id, schedule name, timestamp desc
+rows.sort(key=lambda r: (r[0], r[1], r[2] or ''), reverse=False)
+
+# Find the latest per (cluster_id, schedule)
+latest_keys = set()
+seen = {}
+for r in rows:
+    key = (r[0], r[1])
+    ts = r[2] or ''
+    if key not in seen or ts > seen[key]:
+        seen[key] = ts
+# rows is sorted asc by ts within group; re-sort desc within groups for display
+rows.sort(key=lambda r: (r[0], r[1], r[2] or ''), reverse=False)
+# Group display: cluster -> schedule -> backups (newest first within each)
+from collections import OrderedDict
+groups = OrderedDict()
+for r in rows:
+    key = (r[0], r[1])
+    groups.setdefault(key, []).append(r)
+
+# Compute max widths for clean alignment
+cid_w = max((len(r[0]) for r in rows), default=10)
+sch_w = max((len(r[1]) for r in rows), default=10)
+
+print(f'  {BOLD}{\"CLUSTER-ID\":<{cid_w}s}  {\"SCHEDULE\":<{sch_w}s}  {\"STATUS\":<18s}  {\"STARTED\":<22s}  {\"ERR\":<4s}  {\"WARN\":<4s}  NAME{RESET}')
+
+for (cid, sname), bkps in groups.items():
+    bkps.sort(key=lambda r: r[2] or '', reverse=True)
+    show = bkps[:2]
+    remaining = len(bkps) - 2
+    for i, r in enumerate(show):
+        cluster_id, sched_name, started, bname, phase, errs, warns, full_sch = r
+        if phase == 'Completed':
+            bullet = f'{BLUE}\u25cf{RESET}'
+        elif phase == 'PartiallyFailed':
+            bullet = f'{YELLOW}\u25cf{RESET}'
+        else:
+            bullet = f'{RED}\u25cf{RESET}'
+        if i == 0:
+            cid_disp = f'{CYAN}{cluster_id}{RESET}'
+            cid_pad = cid_w + 9
+            sname_disp = sched_name
+        else:
+            cid_disp = ''
+            cid_pad = cid_w
+            sname_disp = ''
+        print(f'  {cid_disp:<{cid_pad}s}  {sname_disp:<{sch_w}s}  {bullet} {phase:<16s}  {started or \"?\":<22s}  {errs:<4}  {warns:<4}  {DIM}{bname}{RESET}')
+    if remaining > 0:
+        print(f'  {\"\":<{cid_w}s}  {\"\":<{sch_w}s}  {DIM}... {remaining} older backup(s){RESET}')
+" 2>/dev/null || echo "__NONE__")
+
+if [[ "$BKP_TABLE" == "__NONE__" ]]; then
+  printf "  No kubevirt backups found.\n"
+else
+  echo "$BKP_TABLE"
+fi
+
+# --- DataUploads (on each target cluster) ---
+printf "\n"
+for TC in $TARGET_CLUSTERS; do
+  DU_OUT=$(run_oc_on_cluster "$TC" get datauploads.velero.io -n "$OADP_NS" -o json 2>/dev/null || echo '{"items":[]}')
+  DU_SUMMARY=$(echo "$DU_OUT" | python3 -c "
+import sys, json
+items = json.load(sys.stdin).get('items', [])
+if not items:
+    print('none')
+    sys.exit(0)
+by_phase = {}
+for du in items:
+    phase = du.get('status', {}).get('phase', 'Unknown')
+    by_phase[phase] = by_phase.get(phase, 0) + 1
+parts = []
+for phase in ('Completed', 'InProgress', 'Failed', 'Canceling', 'Canceled', 'Unknown'):
+    if phase in by_phase:
+        parts.append(f'{phase}={by_phase[phase]}')
+for phase in sorted(by_phase):
+    if phase not in ('Completed', 'InProgress', 'Failed', 'Canceling', 'Canceled', 'Unknown'):
+        parts.append(f'{phase}={by_phase[phase]}')
+print(f'{len(items)} total: {\"  \".join(parts)}')
+
+BLUE = '\033[34m'; YELLOW = '\033[33m'; RED = '\033[31m'; RESET = '\033[0m'
+failed = [du for du in items if du.get('status',{}).get('phase','') == 'Failed']
+in_progress = [du for du in items if du.get('status',{}).get('phase','') == 'InProgress']
+for du in (failed + in_progress)[:5]:
+    name = du['metadata']['name']
+    phase = du.get('status', {}).get('phase', '?')
+    msg = du.get('status', {}).get('message', '')[:100]
+    started = du.get('status', {}).get('startTimestamp', '?')
+    c = RED if phase == 'Failed' else YELLOW
+    line = f'    {c}\u25cf{RESET} {name}: {phase}  started={started}'
+    if msg:
+        line += f'  msg={msg}'
+    print(line)
+if len(failed) + len(in_progress) > 5:
+    print(f'    ... and {len(failed) + len(in_progress) - 5} more')
+" 2>/dev/null || echo "none")
+
+  if [[ "$DU_SUMMARY" == "none" ]]; then
+    printf "  ${BOLD}DataUploads (%s):${RESET} none\n" "$TC"
+  else
+    printf "  ${BOLD}DataUploads (%s):${RESET} %s\n" "$TC" "$(echo "$DU_SUMMARY" | head -1)"
+    DU_DETAILS=$(echo "$DU_SUMMARY" | tail -n +2)
+    [[ -n "$DU_DETAILS" ]] && echo "$DU_DETAILS"
+  fi
+done
+
+printf "\n${BOLD}Useful commands:${RESET}\n"
+printf "  oc get backups.velero.io -n %s -l %s --sort-by=.status.startTimestamp\n" "$OADP_NS" "$BKP_SCHED_LABEL"
+printf "  oc get datauploads.velero.io -n %s\n" "$OADP_NS"
 printf "  oc get policy -n %s | grep acm-dr-virt\n\n" "$NS"
