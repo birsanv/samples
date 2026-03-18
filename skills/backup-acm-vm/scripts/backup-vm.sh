@@ -222,14 +222,38 @@ for i, vm in enumerate(items):
     printf "\nQuerying managed clusters via kubeconfig contexts...\n"
 
     ALL_CONTEXTS=$(oc config get-contexts -o name 2>/dev/null || echo "")
-    MC_ALL=$(run_oc get managedclusters --no-headers 2>/dev/null || echo "")
+    MC_JSON_ALL=$(run_oc get managedclusters -o json 2>/dev/null || echo '{"items":[]}')
     VM_IDX=1
 
-    # Identify which ManagedCluster is the local (hub) cluster
-    LOCAL_MC_NAME=$(echo "$MC_ALL" | awk '/local-cluster=/{print $1; exit}')
-    [[ -z "$LOCAL_MC_NAME" ]] && LOCAL_MC_NAME=$(run_oc get managedclusters -l local-cluster=true --no-headers 2>/dev/null | awk '{print $1;exit}' || echo "")
+    # Parse managed clusters: name, local-cluster flag, available status
+    LOCAL_MC_NAME=""
+    declare -A MC_AVAILABLE=()
+    while IFS='|' read -r mcname mclocal mcavail; do
+      [[ -z "$mcname" ]] && continue
+      if [[ "$mclocal" == "true" ]]; then
+        LOCAL_MC_NAME="$mcname"
+      fi
+      MC_AVAILABLE["$mcname"]="$mcavail"
+    done < <(echo "$MC_JSON_ALL" | python3 -c "
+import sys, json
+items = json.load(sys.stdin).get('items', [])
+for mc in items:
+    name = mc['metadata']['name']
+    labels = mc.get('metadata', {}).get('labels', {})
+    is_local = labels.get('local-cluster', '')
+    avail = 'Unknown'
+    for c in mc.get('status', {}).get('conditions', []):
+        if c.get('type') == 'ManagedClusterConditionAvailable':
+            avail = c.get('status', 'Unknown')
+            break
+    print(f'{name}|{is_local}|{avail}')
+" 2>/dev/null)
 
-    MC_LIST=$(echo "$MC_ALL" | awk '{print $1}')
+    MC_LIST=$(echo "$MC_JSON_ALL" | python3 -c "
+import sys, json
+for mc in json.load(sys.stdin).get('items', []):
+    print(mc['metadata']['name'])
+" 2>/dev/null)
 
     for MC in $MC_LIST; do
       IS_LOCAL_MC=false
@@ -237,9 +261,8 @@ for i, vm in enumerate(items):
 
       # Skip non-Ready clusters (except local-cluster)
       if [[ "$IS_LOCAL_MC" != true ]]; then
-        MC_STATUS=$(echo "$MC_ALL" | awk -v mc="$MC" '$1==mc {for(i=2;i<=NF;i++) if($i=="True" || $i=="False" || $i=="Unknown") {print $i; exit}}')
-        if [[ "$MC_STATUS" != "True" ]]; then
-          printf "  Checking %s... ${DIM}skipped (status: %s)${RESET}\n" "$MC" "${MC_STATUS:-Unknown}"
+        if [[ "${MC_AVAILABLE[$MC]:-Unknown}" != "True" ]]; then
+          printf "  Checking %s... ${YELLOW}skipped${RESET} ${DIM}(not Ready: %s)${RESET}\n" "$MC" "${MC_AVAILABLE[$MC]:-Unknown}"
           continue
         fi
       fi
