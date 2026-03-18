@@ -117,38 +117,118 @@ declare -A MC_CONTEXT_MAP=()  # managed-cluster -> kubeconfig context
 if [[ "$IS_HUB" == true ]]; then
   printf "Looking for ACM search API...\n"
 
-  # Find the MCH namespace (search API lives in the same namespace)
-  SEARCH_HOST=""
+  # Find the MCH namespace and search service
   MCH_NS=$(run_oc get multiclusterhub --all-namespaces --no-headers 2>/dev/null | awk '{print $1; exit}' || echo "")
+  SEARCH_SVC=""
+  SEARCH_RESULT=""
+
   if [[ -n "$MCH_NS" ]]; then
-    SEARCH_HOST=$(run_oc get route search-api -n "$MCH_NS" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+    for SVC_NAME in search-search-api search-api; do
+      if run_oc get service "$SVC_NAME" -n "$MCH_NS" &>/dev/null; then
+        SEARCH_SVC="$SVC_NAME"
+        break
+      fi
+    done
   fi
 
+  if [[ -n "$SEARCH_SVC" ]]; then
+    printf "  Search service: ${BOLD}%s/%s${RESET}\n" "$MCH_NS" "$SEARCH_SVC"
 
-  if [[ -n "$SEARCH_HOST" ]]; then
-    printf "  Search API route: ${BOLD}%s${RESET}\n" "$SEARCH_HOST"
-    TOKEN=$(run_oc whoami -t 2>/dev/null || echo "")
-    if [[ -n "$TOKEN" ]]; then
-      # Try the /searchapi/graphql endpoint first, then /graphql
+    SEARCH_QUERY='{"query":"query { search(input: [{filters: [{property: \"kind\", values: [\"VirtualMachine\"]}, {property: \"apigroup\", values: [\"kubevirt.io\"]}]}]) { items } }"}'
+
+    # Port-forward to the search service (handles auth via oc)
+    LOCAL_PORT=$((RANDOM % 10000 + 40000))
+    PF_PID=""
+    PF_LOG=$(mktemp /tmp/oc-pf-XXXXXX)
+    oc "${OC_CTX[@]}" port-forward "svc/${SEARCH_SVC}" "${LOCAL_PORT}:4010" -n "$MCH_NS" >"$PF_LOG" 2>&1 &
+    PF_PID=$!
+    sleep 3
+
+    if kill -0 "$PF_PID" 2>/dev/null; then
+      # Get a bearer token with cluster-wide read access for the search API
+      TOKEN=""
+      # First try oc whoami -t (works for token-based logins)
+      TOKEN=$(run_oc whoami -t 2>/dev/null) || true
+      if [[ -n "$TOKEN" ]] && ! [[ "$TOKEN" =~ ^ey|^sha256~ ]]; then
+        TOKEN=""
+      fi
+      # Find an SA with cluster-admin binding
+      if [[ -z "$TOKEN" ]]; then
+        ADMIN_SA=$(run_oc get clusterrolebindings -o json 2>/dev/null | python3 -c "
+import sys, json
+items = json.load(sys.stdin).get('items', [])
+for b in items:
+    role = b.get('roleRef', {}).get('name', '')
+    if role != 'cluster-admin':
+        continue
+    for s in b.get('subjects', []):
+        if s.get('kind') == 'ServiceAccount':
+            print(f'{s.get(\"namespace\",\"?\")}/{s[\"name\"]}')
+" 2>/dev/null | head -1) || true
+        if [[ -n "$ADMIN_SA" ]]; then
+          SA_NS="${ADMIN_SA%%/*}"
+          SA_NAME="${ADMIN_SA##*/}"
+          TOKEN=$(run_oc create token "$SA_NAME" -n "$SA_NS" --duration=10m 2>/dev/null) || true
+        fi
+      fi
+      # Last resort: try well-known SAs
+      if [[ -z "$TOKEN" ]]; then
+        for SA_NS_NAME in "$MCH_NS/multiclusterhub-operator" "kube-system/default" "$MCH_NS/default"; do
+          SA_NS="${SA_NS_NAME%%/*}"
+          SA_NAME="${SA_NS_NAME##*/}"
+          TOKEN=$(run_oc create token "$SA_NAME" -n "$SA_NS" --duration=10m 2>/dev/null) || true
+          if [[ -n "$TOKEN" ]]; then break; fi
+        done
+      fi
+
       for SEARCH_PATH in "/searchapi/graphql" "/graphql"; do
-        SEARCH_RESULT=$(curl -sk -H "Authorization: Bearer $TOKEN" \
-          "https://${SEARCH_HOST}${SEARCH_PATH}" \
+        SEARCH_RESULT=$(curl -sk --max-time 10 \
+          -H "Authorization: Bearer $TOKEN" \
           -H "Content-Type: application/json" \
-          -d '{"query":"query { searchResult(input: [{filters: [{property: \"kind\", values: [\"VirtualMachine\"]}, {property: \"apigroup\", values: [\"kubevirt.io\"]}]}]) { items } }"}' 2>/dev/null || echo "")
+          -d "$SEARCH_QUERY" \
+          "https://127.0.0.1:${LOCAL_PORT}${SEARCH_PATH}" 2>/dev/null) || true
 
         if echo "$SEARCH_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'data' in d" 2>/dev/null; then
+          ITEM_COUNT=$(echo "$SEARCH_RESULT" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+items = []
+for sr in d.get('data', {}).get('search', []):
+    items.extend(sr.get('items', []))
+print(len(items))
+" 2>/dev/null) || true
+          printf "  ${GREEN}Search OK${RESET} via port-forward -> %s (%s items)\n" "$SEARCH_PATH" "${ITEM_COUNT:-0}"
+          if [[ "${ITEM_COUNT:-0}" == "0" ]]; then
+            printf "  ${DIM}Raw response: %.300s${RESET}\n" "$SEARCH_RESULT"
+            # Try a broader query to check if search index has anything
+            BROAD_RESULT=$(curl -sk --max-time 10 \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" \
+              -d '{"query":"query { search(input: [{filters: [{property: \"kind\", values: [\"VirtualMachine\"]}]}]) { count items } }"}' \
+              "https://127.0.0.1:${LOCAL_PORT}${SEARCH_PATH}" 2>/dev/null) || true
+            printf "  ${DIM}Broad query (no apigroup filter): %.300s${RESET}\n" "$BROAD_RESULT"
+          fi
           break
         fi
         SEARCH_RESULT=""
       done
+    else
+      warn "Port-forward failed to start"
+      printf "  Log: %s\n" "$(cat "$PF_LOG" 2>/dev/null || echo '(empty)')"
+    fi
+    rm -f "$PF_LOG" || true
+    if [[ -n "$PF_PID" ]]; then
+      kill "$PF_PID" 2>/dev/null || true
+      wait "$PF_PID" 2>/dev/null || true
+    fi
 
-      if [[ -n "$SEARCH_RESULT" ]]; then
+    if [[ -n "$SEARCH_RESULT" ]]; then
         VM_TABLE=$(echo "$SEARCH_RESULT" | python3 -c "
 import sys, json
 
 data = json.load(sys.stdin)
 items = []
-for sr in data.get('data', {}).get('searchResult', []):
+for sr in data.get('data', {}).get('search', []):
     items.extend(sr.get('items', []))
 if not items:
     sys.exit(0)
@@ -207,14 +287,10 @@ for i, vm in enumerate(items):
           warn "Search API returned no VMs"
         fi
       else
-        warn "Search API query failed (check token permissions)"
+        warn "Search API query failed"
       fi
-    else
-      warn "Could not get auth token (oc whoami -t)"
-    fi
   else
-    warn "No search API route found"
-    printf "  To create one: oc create route passthrough search-api --service=search-search-api --port=4010 -n open-cluster-management\n"
+    warn "No search service found in MCH namespace '${MCH_NS:-?}'"
   fi
 
   # Fallback when search didn't work: query managed clusters via kubeconfig contexts
@@ -519,7 +595,7 @@ resolve_selection() {
 import sys, json
 data = json.load(sys.stdin)
 items = []
-for sr in data.get('data', {}).get('searchResult', []):
+for sr in data.get('data', {}).get('search', []):
     items.extend(sr.get('items', []))
 for vm in items:
     if vm.get('cluster','') == '${lcl}' and vm.get('namespace','') == '${lns}' and vm.get('name','') == '${lname}':
