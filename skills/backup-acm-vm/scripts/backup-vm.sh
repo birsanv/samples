@@ -68,6 +68,70 @@ run_oc_on_cluster() {
   fi
 }
 
+# Label a VM on a managed cluster via ManifestWork (ServerSideApply).
+# Usage: label_vm_via_hub <cluster> <namespace> <vm-name> <label-key> <label-value>
+# To remove a label, pass "" as label-value.
+label_vm_via_hub() {
+  local cluster="$1" ns="$2" vm="$3" lkey="$4" lval="$5"
+  local mw_name="backup-label-$(echo "${vm}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-' | head -c 40)-$(date +%s)"
+
+  local label_yaml
+  if [[ -n "$lval" ]]; then
+    label_yaml="          ${lkey}: \"${lval}\""
+  else
+    label_yaml="          ${lkey}: null"
+  fi
+
+  cat <<MW_EOF | run_oc apply -f - 2>/dev/null || return 1
+apiVersion: work.open-cluster-management.io/v1
+kind: ManifestWork
+metadata:
+  name: ${mw_name}
+  namespace: ${cluster}
+spec:
+  workload:
+    manifests:
+    - apiVersion: kubevirt.io/v1
+      kind: VirtualMachine
+      metadata:
+        name: ${vm}
+        namespace: ${ns}
+        labels:
+${label_yaml}
+  manifestConfigs:
+  - resourceIdentifier:
+      group: kubevirt.io
+      resource: virtualmachines
+      namespace: ${ns}
+      name: ${vm}
+    updateStrategy:
+      type: ServerSideApply
+MW_EOF
+
+  # Wait for ManifestWork to be applied
+  local applied=false
+  for _w in 1 2 3 4 5; do
+    sleep 2
+    local status
+    status=$(run_oc get manifestwork "$mw_name" -n "$cluster" -o jsonpath='{.status.conditions[?(@.type=="Applied")].status}' 2>/dev/null || echo "")
+    if [[ "$status" == "True" ]]; then
+      applied=true
+      break
+    fi
+  done
+
+  # Cleanup the ManifestWork (set deleteOption to Orphan so the label stays)
+  run_oc patch manifestwork "$mw_name" -n "$cluster" --type merge \
+    -p '{"spec":{"deleteOption":{"propagationPolicy":"Orphan"}}}' 2>/dev/null || true
+  run_oc delete manifestwork "$mw_name" -n "$cluster" 2>/dev/null || true
+
+  if [[ "$applied" == true ]]; then
+    return 0
+  else
+    return 1
+  fi
+}
+
 # ============================================================
 # Pre-flight
 # ============================================================
@@ -101,6 +165,20 @@ if run_oc get crd multiclusterhubs.operator.open-cluster-management.io &>/dev/nu
   info "This is an ACM hub cluster"
 else
   printf "This is a managed cluster\n"
+fi
+
+POLICY_COUNT=0
+for pname in acm-dr-virt-install acm-dr-virt-backup acm-dr-virt-restore; do
+  if run_oc get policy.policy.open-cluster-management.io "$pname" -n "$NS" &>/dev/null; then
+    POLICY_COUNT=$((POLICY_COUNT + 1))
+  fi
+done
+if [[ "$POLICY_COUNT" -eq 3 ]]; then
+  info "All 3 virt DR policies found on hub"
+else
+  warn "Only $POLICY_COUNT/3 virt DR policies found in $NS"
+  printf "  The virt DR policies are auto-created when cluster-backup is enabled on MCH.\n"
+  printf "  Check: oc get multiclusterhub -A -o jsonpath='{range .items[*]}{.metadata.name}: cluster-backup={.spec.overrides.components[?(%%40.name==\"cluster-backup\")].enabled}{\"\\\\n\"}{end}'\n"
 fi
 
 # ============================================================
@@ -462,17 +540,26 @@ if [[ -n "$BACKED_UP_TABLE" ]]; then
       IFS='|' read -r _ rcl rns rname _ rbackup _ _ <<< "$RLINE"
 
       printf "  Removing backup label from %s/%s (%s)..." "$rns" "$rname" "$rcl"
-      if run_oc_on_cluster "$rcl" label virtualmachine.kubevirt.io "$rname" -n "$rns" \
-        "${BACKUP_LABEL}-" 2>/dev/null; then
+      REMOVE_OK=false
+      if [[ -n "${MC_CONTEXT_MAP[$rcl]:-}" || "$rcl" == "${LOCAL_MC:-local-cluster}" ]]; then
+        if run_oc_on_cluster "$rcl" label virtualmachine.kubevirt.io "$rname" -n "$rns" \
+          "${BACKUP_LABEL}-" 2>/dev/null; then
+          REMOVE_OK=true
+        fi
+      else
+        if label_vm_via_hub "$rcl" "$rns" "$rname" "$BACKUP_LABEL" ""; then
+          REMOVE_OK=true
+        fi
+      fi
+
+      if [[ "$REMOVE_OK" == true ]]; then
         printf " ${GREEN}OK${RESET}\n"
         REMOVE_COUNT=$((REMOVE_COUNT + 1))
         REMOVED_KEYS+=("${rcl}|${rns}/${rname}")
       else
         printf " ${RED}FAILED${RESET}\n"
-        if [[ -z "${MC_CONTEXT_MAP[$rcl]:-}" && "$rcl" != "${LOCAL_MC:-local-cluster}" ]]; then
-          printf "    ${YELLOW}No kubeconfig context for '%s'. Remove manually on that cluster:${RESET}\n" "$rcl"
-          printf "    oc label virtualmachine.kubevirt.io %s -n %s %s-\n" "$rname" "$rns" "$BACKUP_LABEL"
-        fi
+        printf "    ${YELLOW}Remove manually on cluster '%s':${RESET}\n" "$rcl"
+        printf "    oc label virtualmachine.kubevirt.io %s -n %s %s-\n" "$rname" "$rns" "$BACKUP_LABEL"
       fi
     done
 
@@ -611,153 +698,18 @@ for i in "${!SEL_NAME[@]}"; do
 done
 
 # ============================================================
-# 4. Choose backup schedule
+# 4. Verify policy infrastructure
 # ============================================================
-header "4. Choose backup schedule"
-
-OADP_NS="$NS"
-if [[ "$IS_HUB" != true ]]; then
-  BACKUP_NS_VALUE=$(run_oc get configmap "acm-dr-virt-config--cls" -n "$NS" -o jsonpath='{.data.backupNS}' 2>/dev/null || echo "")
-  if [[ -n "$BACKUP_NS_VALUE" ]]; then
-    OADP_NS="$BACKUP_NS_VALUE"
-  fi
-fi
-
-CRON_CM_JSON=""
-if [[ "$IS_HUB" == true ]]; then
-  CRON_CM_JSON=$(run_oc get configmap "acm-dr-virt-schedule-cron" -n "$NS" -o json 2>/dev/null || echo "")
-fi
-if [[ -z "$CRON_CM_JSON" ]]; then
-  CRON_CM_JSON=$(run_oc get configmap "acm-dr-virt-schedule-cron--cls" -n "$OADP_NS" -o json 2>/dev/null || echo "")
-fi
-if [[ -z "$CRON_CM_JSON" ]]; then
-  CRON_CM_JSON=$(run_oc get configmap "acm-dr-virt-schedule-cron--cls" -n "$NS" -o json 2>/dev/null || echo "")
-fi
-
-CRON_NAMES=()
-CRON_EXPRS=()
-CRON_FOUND=false
-
-if [[ -n "$CRON_CM_JSON" ]]; then
-  CRON_FOUND=true
-  CRON_DATA=$(echo "$CRON_CM_JSON" | python3 -c "
-import sys, json
-data = json.load(sys.stdin).get('data', {})
-for k, v in sorted(data.items()):
-    print(f'{k}|{v}')
-" 2>/dev/null || echo "")
-
-  if [[ -n "$CRON_DATA" ]]; then
-    printf "Available schedules (from cron ConfigMap):\n\n"
-    IDX=1
-    while IFS='|' read -r cname cexpr; do
-      CRON_NAMES+=("$cname")
-      CRON_EXPRS+=("$cexpr")
-      printf "  ${BOLD}%d${RESET}) %-25s %s\n" "$IDX" "$cname" "$cexpr"
-      IDX=$((IDX + 1))
-    done <<< "$CRON_DATA"
-
-    printf "\nEnter schedule number or type a custom schedule name: "
-    read -r SCHED_CHOICE </dev/tty
-
-    if [[ "$SCHED_CHOICE" =~ ^[0-9]+$ ]] && [[ "$SCHED_CHOICE" -ge 1 ]] && [[ "$SCHED_CHOICE" -le ${#CRON_NAMES[@]} ]]; then
-      CHOSEN_SCHEDULE="${CRON_NAMES[$((SCHED_CHOICE - 1))]}"
-    else
-      CHOSEN_SCHEDULE="$SCHED_CHOICE"
-    fi
-  else
-    CRON_FOUND=false
-  fi
-fi
-
-if [[ "$CRON_FOUND" != true ]]; then
-  warn "No schedule cron ConfigMap found on this cluster."
-  printf "The virt DR policies may not be configured yet.\n"
-  printf "Enter a schedule name to use (e.g. daily_8am): "
-  read -r CHOSEN_SCHEDULE </dev/tty
-fi
-
-if [[ -z "$CHOSEN_SCHEDULE" ]]; then
-  err "No schedule selected. Exiting."
-  exit 1
-fi
-
-printf "\nSchedule: ${BOLD}${GREEN}%s${RESET}\n" "$CHOSEN_SCHEDULE"
-
-# Validate the chosen schedule exists in the cron CM
-SCHEDULE_VALID=false
-for cname in "${CRON_NAMES[@]:-}"; do
-  if [[ "$cname" == "$CHOSEN_SCHEDULE" ]]; then
-    SCHEDULE_VALID=true
-    break
-  fi
-done
-
-if [[ "$SCHEDULE_VALID" != true && "$CRON_FOUND" == true ]]; then
-  warn "Schedule '$CHOSEN_SCHEDULE' is not defined in the cron ConfigMap."
-  printf "The backup policy will report a violation until it is added.\n"
-  if confirm "Add '$CHOSEN_SCHEDULE' to the cron ConfigMap now?"; then
-    printf "Enter the cron expression (e.g. '0 8 * * *'): "
-    read -r NEW_CRON_EXPR </dev/tty
-    if [[ -n "$NEW_CRON_EXPR" ]]; then
-      # Find the hub-side cron CM name from the config
-      HUB_CRON_CM=""
-      CONFIG_NAME=$(run_oc get managedcluster -l local-cluster=true -o jsonpath='{.items[0].metadata.labels.acm-virt-config}' 2>/dev/null || echo "")
-      if [[ -n "$CONFIG_NAME" ]]; then
-        HUB_CRON_CM=$(run_oc get configmap "$CONFIG_NAME" -n "$NS" -o jsonpath='{.data.schedule_hub_config_name}' 2>/dev/null || echo "")
-      fi
-      if [[ -n "$HUB_CRON_CM" ]]; then
-        printf "Adding to hub ConfigMap '%s'...\n" "$HUB_CRON_CM"
-        run_oc patch configmap "$HUB_CRON_CM" -n "$NS" --type merge \
-          -p "{\"data\":{\"$CHOSEN_SCHEDULE\":\"$NEW_CRON_EXPR\"}}" 2>/dev/null && \
-          info "Added '$CHOSEN_SCHEDULE: $NEW_CRON_EXPR' to '$HUB_CRON_CM'" || \
-          warn "Failed to patch ConfigMap. You may need to add it manually."
-      else
-        warn "Could not determine the hub cron ConfigMap name. Add it manually:"
-        printf "  oc patch configmap <cron-cm> -n %s --type merge -p '{\"data\":{\"%s\":\"%s\"}}'\n" "$NS" "$CHOSEN_SCHEDULE" "$NEW_CRON_EXPR"
-      fi
-    fi
-  fi
-fi
-
-# ============================================================
-# 5. Check policy infrastructure
-# ============================================================
-header "5. Verify policy infrastructure"
+header "4. Verify backup prerequisites"
 
 POLICIES_OK=true
-NEEDS_POLICY_INSTALL=false
 NEEDS_MC_LABEL=false
 
-step "5a: Check policies exist on hub"
+step "4a: Check ManagedCluster backup configuration"
 
-POLICY_COUNT=0
-for pname in acm-dr-virt-install acm-dr-virt-backup acm-dr-virt-restore; do
-  if run_oc get policy.policy.open-cluster-management.io "$pname" -n "$NS" &>/dev/null; then
-    POLICY_COUNT=$((POLICY_COUNT + 1))
-  fi
-done
-
-if [[ "$POLICY_COUNT" -eq 3 ]]; then
-  info "All 3 virt DR policies found"
-else
-  warn "Only $POLICY_COUNT/3 virt DR policies found in $NS"
-  NEEDS_POLICY_INSTALL=true
-  POLICIES_OK=false
-
-  printf "\nThe virt DR policies are automatically created when cluster-backup\n"
-  printf "is enabled on MultiClusterHub. Check if cluster-backup is enabled:\n\n"
-  printf "  oc get multiclusterhub -A -o jsonpath='{range .items[*]}{.metadata.name}: cluster-backup={.spec.overrides.components[?(%%40.name==\"cluster-backup\")].enabled}{\"\\\\n\"}{end}'\n\n"
-  printf "If not enabled, the admin must enable cluster-backup on MCH.\n"
-  printf "Reference implementation: %s\n" "$POLICY_REPO"
-fi
-
-step "5b: Check ManagedCluster label"
-
-# Determine target managed clusters: selected VMs + all clusters with virt policies placed
+# Target clusters: only the ones that own selected VMs
 SEL_ONLY_CLUSTERS=$(printf '%s\n' "${SEL_CLUSTER[@]}" | sort -u)
-LABELED_MCS=$(run_oc get managedclusters -l acm-virt-config --no-headers 2>/dev/null | awk '{print $1}' || echo "")
-TARGET_CLUSTERS=$(printf '%s\n' $SEL_ONLY_CLUSTERS $LABELED_MCS | sort -u)
+TARGET_CLUSTERS="$SEL_ONLY_CLUSTERS"
 declare -A MC_LABEL_STATUS=()
 NEEDS_MC_LABEL=false
 VIRT_CONFIG_LABEL=""
@@ -767,18 +719,19 @@ for TC in $TARGET_CLUSTERS; do
   TC_LABEL=$(run_oc get managedcluster "$MC_NAME" -o jsonpath='{.metadata.labels.acm-virt-config}' 2>/dev/null || echo "")
 
   if [[ -n "$TC_LABEL" ]]; then
-    info "ManagedCluster '$MC_NAME' has acm-virt-config=$TC_LABEL"
+    info "ManagedCluster '$MC_NAME' uses backup config '$TC_LABEL'"
     MC_LABEL_STATUS["$MC_NAME"]="$TC_LABEL"
     [[ -z "$VIRT_CONFIG_LABEL" ]] && VIRT_CONFIG_LABEL="$TC_LABEL"
   else
-    warn "ManagedCluster '$MC_NAME' does not have the acm-virt-config label."
+    warn "ManagedCluster '$MC_NAME' has no backup configuration assigned (missing acm-virt-config label)."
+    printf "The acm-virt-config label is used to point to the file used to configure the OADP backup for this cluster.\n"
     MC_LABEL_STATUS["$MC_NAME"]=""
     NEEDS_MC_LABEL=true
     POLICIES_OK=false
   fi
 done
 
-step "5c: Check configuration ConfigMap"
+step "4b: Assign backup configuration to clusters"
 
 CONFIG_EXISTS=false
 if [[ -n "$VIRT_CONFIG_LABEL" ]]; then
@@ -791,107 +744,235 @@ if [[ -n "$VIRT_CONFIG_LABEL" ]]; then
   fi
 fi
 
-if [[ "$CONFIG_EXISTS" != true && "$NEEDS_MC_LABEL" == true ]]; then
-  printf "\n${BOLD}The virt DR policies need a configuration ConfigMap.${RESET}\n"
-  printf "When cluster-backup is enabled on MCH, the ConfigMaps are auto-created:\n"
-  printf "  - acm-dr-virt-config\n"
-  printf "  - acm-dr-virt-schedule-cron (9 predefined schedules)\n"
-  printf "  - acm-dr-virt-restore-config\n\n"
+# Discover all virt ConfigMaps and which clusters use them (needed for labeling)
+EXISTING_CMS=""
+declare -A CM_USERS=()
+if [[ "$NEEDS_MC_LABEL" == true ]]; then
+  EXISTING_CMS_RAW=$(run_oc get configmaps -n "$NS" -o json 2>/dev/null || echo '{"items":[]}')
+  EXISTING_CMS=$(echo "$EXISTING_CMS_RAW" | python3 -c "
+import sys, json
+items = json.load(sys.stdin).get('items', [])
+virt_cms = []
+for cm in items:
+    data = cm.get('data', {})
+    if 'backupNS' in data and 'dpa_spec' in data and not name.endswith('--cls'):
+        virt_cms.append(name)
+for n in sorted(virt_cms):
+    print(n)
+" 2>/dev/null || echo "")
 
-  DEFAULT_CM_NAME="acm-dr-virt-config"
-  if run_oc get configmap "$DEFAULT_CM_NAME" -n "$NS" &>/dev/null; then
-    info "Default ConfigMap '$DEFAULT_CM_NAME' already exists"
-    VIRT_CONFIG_LABEL="$DEFAULT_CM_NAME"
-    CONFIG_EXISTS=true
-  else
-    printf "${YELLOW}[WARN]${RESET} Default ConfigMap '%s' not found.\n" "$DEFAULT_CM_NAME"
-    printf "Ensure cluster-backup is enabled on MCH to auto-create it.\n\n"
+  ALL_MC_LABELS=$(run_oc get managedclusters -o json 2>/dev/null || echo '{"items":[]}')
+  while IFS='|' read -r mc_name mc_cm; do
+    [[ -z "$mc_name" || -z "$mc_cm" ]] && continue
+    CM_USERS["$mc_cm"]="${CM_USERS[$mc_cm]:-}${CM_USERS[$mc_cm]:+, }$mc_name"
+  done < <(echo "$ALL_MC_LABELS" | python3 -c "
+import sys, json
+for mc in json.load(sys.stdin).get('items', []):
+    labels = mc.get('metadata', {}).get('labels', {})
+    cm = labels.get('acm-virt-config', '')
+    if cm:
+        print(f\"{mc['metadata']['name']}|{cm}\")
+" 2>/dev/null)
+fi
 
-    if confirm "Create a basic configuration ConfigMap as a fallback?"; then
-      printf "Enter a name for the ConfigMap [acm-dr-virt-config]: "
-      read -r NEW_CM_NAME </dev/tty
-      [[ -z "$NEW_CM_NAME" ]] && NEW_CM_NAME="acm-dr-virt-config"
+# Helper: let user pick a ConfigMap (from list or create new), returns name via CHOSEN_CM
+pick_configmap() {
+  local chosen=""
 
-      printf "Enter the OADP namespace for this cluster [open-cluster-management-backup]: "
-      read -r NEW_OADP_NS </dev/tty
-      [[ -z "$NEW_OADP_NS" ]] && NEW_OADP_NS="open-cluster-management-backup"
+  if [[ -n "$EXISTING_CMS" ]]; then
+    local cm_count
+    cm_count=$(echo "$EXISTING_CMS" | wc -l | tr -d ' ')
+    printf "\n${BOLD}Available virt configuration ConfigMaps in %s:${RESET}\n\n" "$NS"
+    local cidx=1
+    while IFS= read -r cm_name; do
+      local users="${CM_USERS[$cm_name]:-none}"
+      printf "  ${CYAN}%d)${RESET} %-30s ${DIM}used by: %s${RESET}\n" "$cidx" "$cm_name" "$users"
+      cidx=$((cidx + 1))
+    done <<< "$EXISTING_CMS"
+    printf "  ${CYAN}%d)${RESET} %-30s ${DIM}(create a new ConfigMap)${RESET}\n" "$cidx" "[new]"
+    printf "\n"
 
-      SCHED_CM_NAME="acm-dr-virt-schedule-cron"
-      RESTORE_CM_NAME="acm-dr-virt-restore-config"
-      CRED_SECRET_NAME="cloud-credentials"
-
-      printf "\nCreating ConfigMap '%s'...\n" "$NEW_CM_NAME"
-      run_oc create configmap "$NEW_CM_NAME" -n "$NS" \
-        --from-literal=backupNS="$NEW_OADP_NS" \
-        --from-literal=channel="" \
-        --from-literal=dpa_name="" \
-        --from-literal=dpa_spec="" \
-        --from-literal=credentials_hub_secret_name="$CRED_SECRET_NAME" \
-        --from-literal=credentials_name="$CRED_SECRET_NAME" \
-        --from-literal=schedule_hub_config_name="$SCHED_CM_NAME" \
-        --from-literal=restore_hub_config_name="$RESTORE_CM_NAME" \
-        --from-literal=scheduleTTL="120h" \
-        2>/dev/null && info "Created ConfigMap '$NEW_CM_NAME'" || \
-        warn "Failed to create ConfigMap. Create it manually."
-
-      if ! run_oc get configmap "$SCHED_CM_NAME" -n "$NS" &>/dev/null; then
-        printf "Creating schedule cron ConfigMap '%s'...\n" "$SCHED_CM_NAME"
-        CRON_CREATE_ARGS=(
-          --from-literal=hourly="0 */1 * * *"
-          --from-literal=every_2_hours="0 */2 * * *"
-          --from-literal=every_3_hours="0 */3 * * *"
-          --from-literal=every_4_hours="0 */4 * * *"
-          --from-literal=every_5_hours="0 */5 * * *"
-          --from-literal=every_6_hours="0 */6 * * *"
-          --from-literal=twice_a_day="0 0,12 * * *"
-          --from-literal=daily_8am="0 8 * * *"
-          --from-literal=every_sunday="0 0 * * 0"
-        )
-        if [[ "$SCHEDULE_VALID" != true && -n "$CHOSEN_SCHEDULE" && -n "${NEW_CRON_EXPR:-}" ]]; then
-          CRON_CREATE_ARGS+=(--from-literal="$CHOSEN_SCHEDULE"="$NEW_CRON_EXPR")
-        fi
-        run_oc create configmap "$SCHED_CM_NAME" -n "$NS" "${CRON_CREATE_ARGS[@]}" \
-          2>/dev/null && info "Created '$SCHED_CM_NAME' with predefined schedules" || \
-          warn "Failed to create cron ConfigMap."
+    local cm_choice
+    while true; do
+      printf "${BOLD}Select ConfigMap (1-%d):${RESET} " "$cidx"
+      read -r cm_choice </dev/tty
+      if [[ "$cm_choice" =~ ^[0-9]+$ && "$cm_choice" -ge 1 && "$cm_choice" -le "$cidx" ]]; then
+        break
       fi
+      printf "  ${YELLOW}Invalid choice. Enter a number from 1 to %d.${RESET}\n" "$cidx"
+    done
 
-      if ! run_oc get configmap "$RESTORE_CM_NAME" -n "$NS" &>/dev/null; then
-        printf "Creating restore ConfigMap '%s' (empty)...\n" "$RESTORE_CM_NAME"
-        run_oc create configmap "$RESTORE_CM_NAME" -n "$NS" \
-          2>/dev/null && info "Created '$RESTORE_CM_NAME'" || \
-          warn "Failed to create restore ConfigMap."
+    if [[ "$cm_choice" -lt "$cidx" ]]; then
+      chosen=$(echo "$EXISTING_CMS" | sed -n "${cm_choice}p")
+      info "Selected ConfigMap '$chosen'"
+      local users="${CM_USERS[$chosen]:-}"
+      if [[ -n "$users" ]]; then
+        printf "  ${DIM}Also used by: %s${RESET}\n" "$users"
       fi
-
-      VIRT_CONFIG_LABEL="$NEW_CM_NAME"
-      CONFIG_EXISTS=true
-
-      printf "\n${YELLOW}[IMPORTANT]${RESET} You still need to configure these in '%s':\n" "$NEW_CM_NAME"
-      printf "  - dpa_name:  name of the DataProtectionApplication\n"
-      printf "  - dpa_spec:  DPA spec JSON (backup locations, plugins, credentials)\n"
-      printf "  - channel:   OADP channel (e.g. stable-1.4)\n"
-      printf "  - credentials secret: create '%s' in %s\n\n" "$CRED_SECRET_NAME" "$NS"
-      printf "Edit with: oc edit configmap %s -n %s\n" "$NEW_CM_NAME" "$NS"
+      CHOSEN_CM="$chosen"
+      return 0
     fi
+  fi
+
+  # Create new ConfigMap by copying from existing acm-dr-virt-config
+  printf "\n${BOLD}Create a new virt configuration ConfigMap${RESET}\n"
+  printf "Use this when a managed cluster needs different DPA/BSL settings\n"
+  printf "(e.g. different cloud provider, bucket, or credentials).\n"
+  printf "The new ConfigMap will be pre-populated from the existing 'acm-dr-virt-config'.\n\n"
+
+  if ! confirm "Create a new configuration ConfigMap?"; then
+    CHOSEN_CM=""
+    return 1
+  fi
+
+  printf "Enter a name for the new ConfigMap: "
+  read -r NEW_CM_NAME </dev/tty
+  if [[ -z "$NEW_CM_NAME" ]]; then
+    warn "No name entered."
+    CHOSEN_CM=""
+    return 1
+  fi
+
+  if run_oc get configmap "$NEW_CM_NAME" -n "$NS" &>/dev/null; then
+    info "ConfigMap '$NEW_CM_NAME' already exists"
+    CHOSEN_CM="$NEW_CM_NAME"
+    return 0
+  fi
+
+  # Discover all virt-like ConfigMaps to copy from (broader filter: any CM with backupNS key)
+  local copy_cms=""
+  copy_cms=$(run_oc get configmaps -n "$NS" -o json 2>/dev/null | python3 -c "
+import sys, json
+items = json.load(sys.stdin).get('items', [])
+for cm in items:
+    name = cm['metadata']['name']
+    data = cm.get('data', {})
+    if 'backupNS' in data and not name.endswith('--cls'):
+        print(name)
+" 2>/dev/null || echo "")
+
+  local source_cm=""
+  if [[ -n "$copy_cms" ]]; then
+    local src_count
+    src_count=$(echo "$copy_cms" | wc -l | tr -d ' ')
+    printf "\nCopy settings from an existing ConfigMap:\n\n"
+    local sidx=1
+    while IFS= read -r scm; do
+      local susers="${CM_USERS[$scm]:-none}"
+      printf "  ${CYAN}%d)${RESET} %-30s ${DIM}used by: %s${RESET}\n" "$sidx" "$scm" "$susers"
+      sidx=$((sidx + 1))
+    done <<< "$copy_cms"
+    printf "\n"
+
+    while true; do
+      printf "${BOLD}Copy from (1-%d):${RESET} " "$src_count"
+      read -r src_choice </dev/tty
+      if [[ "$src_choice" =~ ^[0-9]+$ && "$src_choice" -ge 1 && "$src_choice" -le "$src_count" ]]; then
+        break
+      fi
+      printf "  ${YELLOW}Invalid choice. Enter a number from 1 to %d.${RESET}\n" "$src_count"
+    done
+    source_cm=$(echo "$copy_cms" | sed -n "${src_choice}p")
+  else
+    source_cm="acm-dr-virt-config"
+  fi
+
+  local source_json=""
+  source_json=$(run_oc get configmap "$source_cm" -n "$NS" -o json 2>/dev/null || echo "")
+
+  if [[ -n "$source_json" ]]; then
+    printf "Copying from '%s'...\n" "$source_cm"
+    local new_cm_json
+    new_cm_json=$(echo "$source_json" | python3 -c "
+import sys, json
+cm = json.load(sys.stdin)
+cm['metadata'] = {'name': '$NEW_CM_NAME', 'namespace': '$NS'}
+if 'resourceVersion' in cm.get('metadata', {}):
+    del cm['metadata']['resourceVersion']
+json.dump(cm, sys.stdout)
+" 2>/dev/null)
+
+    if [[ -n "$new_cm_json" ]]; then
+      echo "$new_cm_json" | run_oc create -f - 2>/dev/null && \
+        info "Created ConfigMap '$NEW_CM_NAME' (copied from '$source_cm')" || \
+        { warn "Failed to create ConfigMap."; CHOSEN_CM=""; return 1; }
+    else
+      warn "Failed to prepare ConfigMap data."
+      CHOSEN_CM=""
+      return 1
+    fi
+
+    printf "\n${YELLOW}[IMPORTANT]${RESET} Update the DPA and credential settings for the target cluster:\n"
+    printf "  oc edit configmap %s -n %s\n\n" "$NEW_CM_NAME" "$NS"
+    printf "Key fields to update:\n"
+    printf "  - dpa_spec:  DPA spec JSON (backup location, provider, bucket, credentials)\n"
+    printf "  - credentials_name:  name of the cloud credentials secret on the target cluster\n"
+    if confirm "Open the new ConfigMap for editing now?"; then
+      run_oc edit configmap "$NEW_CM_NAME" -n "$NS" </dev/tty || true
+    fi
+  else
+    warn "Could not find '%s' to copy from. Creating with empty defaults." "$source_cm"
+    local sched_cm="acm-dr-virt-schedule-cron"
+    local restore_cm="acm-dr-virt-restore-config"
+    local cred_secret="cloud-credentials"
+
+    run_oc create configmap "$NEW_CM_NAME" -n "$NS" \
+      --from-literal=backupNS="open-cluster-management-backup" \
+      --from-literal=channel="" \
+      --from-literal=dpa_name="" \
+      --from-literal=dpa_spec="" \
+      --from-literal=credentials_hub_secret_name="$cred_secret" \
+      --from-literal=credentials_name="$cred_secret" \
+      --from-literal=schedule_hub_config_name="$sched_cm" \
+      --from-literal=restore_hub_config_name="$restore_cm" \
+      --from-literal=scheduleTTL="120h" \
+      2>/dev/null && info "Created ConfigMap '$NEW_CM_NAME'" || \
+      { warn "Failed to create ConfigMap."; CHOSEN_CM=""; return 1; }
+
+    printf "\n${YELLOW}[IMPORTANT]${RESET} You must configure these in '%s':\n" "$NEW_CM_NAME"
+    printf "  - dpa_name:  name of the DataProtectionApplication\n"
+    printf "  - dpa_spec:  DPA spec JSON (backup locations, plugins, credentials)\n"
+    printf "  - channel:   OADP channel (e.g. stable-1.4)\n"
+    printf "  - credentials secret: create '%s' in the target namespace\n\n" "$cred_secret"
+    printf "Edit with: oc edit configmap %s -n %s\n" "$NEW_CM_NAME" "$NS"
+  fi
+
+  CHOSEN_CM="$NEW_CM_NAME"
+  return 0
+}
+
+if [[ "$NEEDS_MC_LABEL" == true ]]; then
+  UNLABELED_CLUSTERS=()
+  for TC in $TARGET_CLUSTERS; do
+    [[ -z "${MC_LABEL_STATUS[$TC]:-}" ]] && UNLABELED_CLUSTERS+=("$TC")
+  done
+
+  if [[ ${#UNLABELED_CLUSTERS[@]} -gt 0 ]]; then
+    printf "\n${BOLD}Clusters needing acm-virt-config label:${RESET} %s\n" "${UNLABELED_CLUSTERS[*]}"
+    printf "Each cluster must point to a virt configuration ConfigMap.\n"
+
+    CHOSEN_CM=""
+    pick_configmap
+    CM_FOR_LABELING="${CHOSEN_CM:-acm-dr-virt-config}"
+
+    for TC in "${UNLABELED_CLUSTERS[@]}"; do
+      if confirm "Label ManagedCluster '$TC' with acm-virt-config=$CM_FOR_LABELING?"; then
+        run_oc label managedcluster "$TC" "acm-virt-config=$CM_FOR_LABELING" --overwrite 2>/dev/null && \
+          info "Labeled '$TC' with acm-virt-config=$CM_FOR_LABELING" || \
+          warn "Failed to label. Run: oc label managedcluster $TC acm-virt-config=$CM_FOR_LABELING"
+      else
+        printf "Skipping. Label manually:\n  oc label managedcluster %s acm-virt-config=%s\n" "$TC" "$CM_FOR_LABELING"
+      fi
+    done
+
+    [[ -z "$VIRT_CONFIG_LABEL" ]] && VIRT_CONFIG_LABEL="$CM_FOR_LABELING"
+    CONFIG_EXISTS=true
   fi
 fi
 
-if [[ "$NEEDS_MC_LABEL" == true ]]; then
-  [[ -z "$VIRT_CONFIG_LABEL" ]] && VIRT_CONFIG_LABEL="acm-dr-virt-config"
-  for TC in $TARGET_CLUSTERS; do
-    if [[ -z "${MC_LABEL_STATUS[$TC]:-}" ]]; then
-      if confirm "Label ManagedCluster '$TC' with acm-virt-config=$VIRT_CONFIG_LABEL?"; then
-        run_oc label managedcluster "$TC" "acm-virt-config=$VIRT_CONFIG_LABEL" --overwrite 2>/dev/null && \
-          info "Labeled '$TC' with acm-virt-config=$VIRT_CONFIG_LABEL" || \
-          warn "Failed to label. Run: oc label managedcluster $TC acm-virt-config=$VIRT_CONFIG_LABEL"
-      else
-        printf "Skipping. Label manually:\n  oc label managedcluster %s acm-virt-config=%s\n" "$TC" "$VIRT_CONFIG_LABEL"
-      fi
-    fi
-  done
-fi
+step "4c: Check OADP and DPA"
 
-step "5d: Check OADP and DPA"
-
+OADP_NS="${OADP_NS:-open-cluster-management-backup}"
 DPA_OK=true
 LOCAL_MC="${LOCAL_MC:-$(run_oc get managedclusters -l local-cluster=true --no-headers 2>/dev/null | awk '{print $1;exit}' || echo "local-cluster")}"
 for TC in $TARGET_CLUSTERS; do
@@ -928,7 +1009,7 @@ for TC in $TARGET_CLUSTERS; do
   fi
 done
 
-step "5e: Check acm-dr-virt-install policy compliance"
+step "4d: Check acm-dr-virt-install policy compliance"
 
 INSTALL_POLICY_OK=true
 if run_oc get crd policies.policy.open-cluster-management.io &>/dev/null; then
@@ -953,6 +1034,26 @@ import sys, json
 p = json.load(sys.stdin)
 print(p.get('status', {}).get('compliant', 'Unknown'))
 " 2>/dev/null || echo "Unknown")
+
+      if [[ "$TC_COMPLIANCE" == "Compliant" ]]; then
+        info "acm-dr-virt-install is Compliant on '$TC'"
+        continue
+      fi
+
+      # Policy may still be reconciling; wait and retry
+      printf "  ${DIM}Policy is %s, waiting for reconciliation...${RESET}" "$TC_COMPLIANCE"
+      for _retry in 1 2 3; do
+        sleep 5
+        printf "."
+        REPL_POLICY=$(run_oc get policy.policy.open-cluster-management.io "${NS}.acm-dr-virt-install" -n "$TC" -o json 2>/dev/null || echo "")
+        TC_COMPLIANCE=$(echo "$REPL_POLICY" | python3 -c "
+import sys, json
+p = json.load(sys.stdin)
+print(p.get('status', {}).get('compliant', 'Unknown'))
+" 2>/dev/null || echo "Unknown")
+        if [[ "$TC_COMPLIANCE" == "Compliant" ]]; then break; fi
+      done
+      printf "\n"
 
       if [[ "$TC_COMPLIANCE" == "Compliant" ]]; then
         info "acm-dr-virt-install is Compliant on '$TC'"
@@ -992,12 +1093,18 @@ for v in violated:
       IS_LOCAL_TC=false
       [[ "$TC" == "$LOCAL_MC" ]] && IS_LOCAL_TC=true
 
-      # Check if this managed cluster is itself a hub (has MCH CRD)
+      # Check if this managed cluster is itself a hub.
+      # For local-cluster, use the known IS_HUB flag.
+      # For remote clusters, check if the ManagedCluster has the product claim
+      # indicating ACM is installed (visible from the hub without direct access).
       TC_IS_HUB=false
       if [[ "$IS_LOCAL_TC" == true ]]; then
         TC_IS_HUB="$IS_HUB"
-      elif run_oc_on_cluster "$TC" get crd multiclusterhubs.operator.open-cluster-management.io &>/dev/null; then
-        TC_IS_HUB=true
+      else
+        MC_PRODUCT=$(run_oc get managedcluster "$TC" -o jsonpath='{.status.clusterClaims[?(@.name=="product.open-cluster-management.io")].value}' 2>/dev/null || echo "")
+        if [[ -n "$MC_PRODUCT" ]]; then
+          TC_IS_HUB=true
+        fi
       fi
 
       printf "\n  ${BOLD}Suggested fixes (%s):${RESET}\n" "$TC"
@@ -1233,6 +1340,115 @@ else
 fi
 
 # ============================================================
+# 5. Choose backup schedule
+# ============================================================
+header "5. Choose backup schedule"
+
+OADP_NS="$NS"
+if [[ "$IS_HUB" != true ]]; then
+  BACKUP_NS_VALUE=$(run_oc get configmap "acm-dr-virt-config--cls" -n "$NS" -o jsonpath='{.data.backupNS}' 2>/dev/null || echo "")
+  if [[ -n "$BACKUP_NS_VALUE" ]]; then
+    OADP_NS="$BACKUP_NS_VALUE"
+  fi
+fi
+
+CRON_CM_JSON=""
+if [[ "$IS_HUB" == true ]]; then
+  CRON_CM_JSON=$(run_oc get configmap "acm-dr-virt-schedule-cron" -n "$NS" -o json 2>/dev/null || echo "")
+fi
+if [[ -z "$CRON_CM_JSON" ]]; then
+  CRON_CM_JSON=$(run_oc get configmap "acm-dr-virt-schedule-cron--cls" -n "$OADP_NS" -o json 2>/dev/null || echo "")
+fi
+if [[ -z "$CRON_CM_JSON" ]]; then
+  CRON_CM_JSON=$(run_oc get configmap "acm-dr-virt-schedule-cron--cls" -n "$NS" -o json 2>/dev/null || echo "")
+fi
+
+CRON_NAMES=()
+CRON_EXPRS=()
+CRON_FOUND=false
+
+if [[ -n "$CRON_CM_JSON" ]]; then
+  CRON_FOUND=true
+  CRON_DATA=$(echo "$CRON_CM_JSON" | python3 -c "
+import sys, json
+data = json.load(sys.stdin).get('data', {})
+for k, v in sorted(data.items()):
+    print(f'{k}|{v}')
+" 2>/dev/null || echo "")
+
+  if [[ -n "$CRON_DATA" ]]; then
+    printf "Available schedules (from cron ConfigMap):\n\n"
+    IDX=1
+    while IFS='|' read -r cname cexpr; do
+      CRON_NAMES+=("$cname")
+      CRON_EXPRS+=("$cexpr")
+      printf "  ${BOLD}%d${RESET}) %-25s %s\n" "$IDX" "$cname" "$cexpr"
+      IDX=$((IDX + 1))
+    done <<< "$CRON_DATA"
+
+    printf "\nEnter schedule number or type a custom schedule name: "
+    read -r SCHED_CHOICE </dev/tty
+
+    if [[ "$SCHED_CHOICE" =~ ^[0-9]+$ ]] && [[ "$SCHED_CHOICE" -ge 1 ]] && [[ "$SCHED_CHOICE" -le ${#CRON_NAMES[@]} ]]; then
+      CHOSEN_SCHEDULE="${CRON_NAMES[$((SCHED_CHOICE - 1))]}"
+    else
+      CHOSEN_SCHEDULE="$SCHED_CHOICE"
+    fi
+  else
+    CRON_FOUND=false
+  fi
+fi
+
+if [[ "$CRON_FOUND" != true ]]; then
+  warn "No schedule cron ConfigMap found on this cluster."
+  printf "The virt DR policies may not be configured yet.\n"
+  printf "Enter a schedule name to use (e.g. daily_8am): "
+  read -r CHOSEN_SCHEDULE </dev/tty
+fi
+
+if [[ -z "$CHOSEN_SCHEDULE" ]]; then
+  err "No schedule selected. Exiting."
+  exit 1
+fi
+
+printf "\nSchedule: ${BOLD}${GREEN}%s${RESET}\n" "$CHOSEN_SCHEDULE"
+
+# Validate the chosen schedule exists in the cron CM
+SCHEDULE_VALID=false
+for cname in "${CRON_NAMES[@]:-}"; do
+  if [[ "$cname" == "$CHOSEN_SCHEDULE" ]]; then
+    SCHEDULE_VALID=true
+    break
+  fi
+done
+
+if [[ "$SCHEDULE_VALID" != true && "$CRON_FOUND" == true ]]; then
+  warn "Schedule '$CHOSEN_SCHEDULE' is not defined in the cron ConfigMap."
+  printf "The backup policy will report a violation until it is added.\n"
+  if confirm "Add '$CHOSEN_SCHEDULE' to the cron ConfigMap now?"; then
+    printf "Enter the cron expression (e.g. '0 8 * * *'): "
+    read -r NEW_CRON_EXPR </dev/tty
+    if [[ -n "$NEW_CRON_EXPR" ]]; then
+      HUB_CRON_CM=""
+      CONFIG_NAME=$(run_oc get managedcluster -l local-cluster=true -o jsonpath='{.items[0].metadata.labels.acm-virt-config}' 2>/dev/null || echo "")
+      if [[ -n "$CONFIG_NAME" ]]; then
+        HUB_CRON_CM=$(run_oc get configmap "$CONFIG_NAME" -n "$NS" -o jsonpath='{.data.schedule_hub_config_name}' 2>/dev/null || echo "")
+      fi
+      if [[ -n "$HUB_CRON_CM" ]]; then
+        printf "Adding to hub ConfigMap '%s'...\n" "$HUB_CRON_CM"
+        run_oc patch configmap "$HUB_CRON_CM" -n "$NS" --type merge \
+          -p "{\"data\":{\"$CHOSEN_SCHEDULE\":\"$NEW_CRON_EXPR\"}}" 2>/dev/null && \
+          info "Added '$CHOSEN_SCHEDULE: $NEW_CRON_EXPR' to '$HUB_CRON_CM'" || \
+          warn "Failed to patch ConfigMap. You may need to add it manually."
+      else
+        warn "Could not determine the hub cron ConfigMap name. Add it manually:"
+        printf "  oc patch configmap <cron-cm> -n %s --type merge -p '{\"data\":{\"%s\":\"%s\"}}'\n" "$NS" "$CHOSEN_SCHEDULE" "$NEW_CRON_EXPR"
+      fi
+    fi
+  fi
+fi
+
+# ============================================================
 # 6. Apply backup labels
 # ============================================================
 header "6. Apply backup labels"
@@ -1260,16 +1476,27 @@ for i in "${!SEL_NAME[@]}"; do
     printf "  %-25s (%s) -> %s" "${vm_ns}/${vm_name}" "$vm_cluster" "$CHOSEN_SCHEDULE"
   fi
 
-  if run_oc_on_cluster "$vm_cluster" label virtualmachine.kubevirt.io "$vm_name" -n "$vm_ns" \
-    "${BACKUP_LABEL}=${CHOSEN_SCHEDULE}" --overwrite 2>/dev/null; then
+  LABEL_OK=false
+  if [[ -n "${MC_CONTEXT_MAP[$vm_cluster]:-}" || "$vm_cluster" == "$LOCAL_MC" ]]; then
+    # Direct access available
+    if run_oc_on_cluster "$vm_cluster" label virtualmachine.kubevirt.io "$vm_name" -n "$vm_ns" \
+      "${BACKUP_LABEL}=${CHOSEN_SCHEDULE}" --overwrite 2>/dev/null; then
+      LABEL_OK=true
+    fi
+  else
+    # Use ManifestWork via the hub
+    if label_vm_via_hub "$vm_cluster" "$vm_ns" "$vm_name" "$BACKUP_LABEL" "$CHOSEN_SCHEDULE"; then
+      LABEL_OK=true
+    fi
+  fi
+
+  if [[ "$LABEL_OK" == true ]]; then
     printf "  ${GREEN}OK${RESET}\n"
     LABELED_COUNT=$((LABELED_COUNT + 1))
   else
     printf "  ${RED}FAILED${RESET}\n"
-    if [[ -z "${MC_CONTEXT_MAP[$vm_cluster]:-}" && "$vm_cluster" != "$LOCAL_MC" ]]; then
-      printf "    ${YELLOW}No kubeconfig context for '%s'. Label manually on that cluster:${RESET}\n" "$vm_cluster"
-      printf "    oc label virtualmachine.kubevirt.io %s -n %s %s=%s --overwrite\n" "$vm_name" "$vm_ns" "$BACKUP_LABEL" "$CHOSEN_SCHEDULE"
-    fi
+    printf "    ${YELLOW}Label manually on cluster '%s':${RESET}\n" "$vm_cluster"
+    printf "    oc label virtualmachine.kubevirt.io %s -n %s %s=%s --overwrite\n" "$vm_name" "$vm_ns" "$BACKUP_LABEL" "$CHOSEN_SCHEDULE"
   fi
 done
 
@@ -1449,150 +1676,128 @@ if [[ -z "${TARGET_CLUSTERS:-}" ]]; then
   TARGET_CLUSTERS=$(run_oc get managedclusters -l acm-virt-config --no-headers 2>/dev/null | awk '{print $1}' || echo "")
 fi
 
-BKP_SCHED_LABEL="cluster.open-cluster-management.io/backup-schedule-type=kubevirt"
+# For each virt-labeled cluster, read the backup policy to find active schedules and status.
+printf "Checking backup policy status per cluster...\n\n"
 
-# All kubevirt backups live on the hub (the hub's OADP runs the schedules).
-# Each backup's annotations tell us which cluster + schedule it belongs to.
-# The schedule name encodes the source cluster ID and cron name.
-BKP_OUT=$(run_oc get backups.velero.io -n "$OADP_NS" -l "$BKP_SCHED_LABEL" -o json 2>/dev/null || echo '{"items":[]}')
-BKP_TABLE=$(echo "$BKP_OUT" | python3 -c "
-import sys, json, re
-
-items = json.load(sys.stdin).get('items', [])
-if not items:
-    print('__NONE__')
-    sys.exit(0)
-
-BLUE = '\033[34m'; YELLOW = '\033[33m'; RED = '\033[31m'; CYAN = '\033[36m'
-BOLD = '\033[1m'; DIM = '\033[2m'; RESET = '\033[0m'
-
-rows = []
-for b in items:
-    name = b['metadata']['name']
-    phase = b.get('status', {}).get('phase', 'Unknown')
-    started = b.get('status', {}).get('startTimestamp', '')
-    errs = b.get('status', {}).get('errors', 0)
-    warns = b.get('status', {}).get('warnings', 0)
-    sch = b['metadata'].get('labels', {}).get('velero.io/schedule-name', '?')
-
-    labels = b['metadata'].get('labels', {})
-    cluster_id = labels.get('cluster.open-cluster-management.io/backup-cluster', '?')
-
-    # Extract schedule cron name from schedule name
-    sched_name = sch
-    # acm-rho-virt-schedule-<cron_name>-<clusterid>
-    m = re.match(r'acm-rho-virt-schedule-(.+)-[a-f0-9]{8,}$', sch)
-    if m:
-        sched_name = m.group(1)
-
-    rows.append((cluster_id, sched_name, started, name, phase, errs, warns, sch))
-
-# Sort by cluster_id, schedule name, timestamp desc
-rows.sort(key=lambda r: (r[0], r[1], r[2] or ''), reverse=False)
-
-# Find the latest per (cluster_id, schedule)
-latest_keys = set()
-seen = {}
-for r in rows:
-    key = (r[0], r[1])
-    ts = r[2] or ''
-    if key not in seen or ts > seen[key]:
-        seen[key] = ts
-# rows is sorted asc by ts within group; re-sort desc within groups for display
-rows.sort(key=lambda r: (r[0], r[1], r[2] or ''), reverse=False)
-# Group display: cluster -> schedule -> backups (newest first within each)
-from collections import OrderedDict
-groups = OrderedDict()
-for r in rows:
-    key = (r[0], r[1])
-    groups.setdefault(key, []).append(r)
-
-# Compute max widths for clean alignment
-cid_w = max((len(r[0]) for r in rows), default=10)
-sch_w = max((len(r[1]) for r in rows), default=10)
-
-print(f'  {BOLD}{\"CLUSTER-ID\":<{cid_w}s}  {\"SCHEDULE\":<{sch_w}s}  {\"STATUS\":<18s}  {\"STARTED\":<22s}  {\"ERR\":<4s}  {\"WARN\":<4s}  NAME{RESET}')
-
-for (cid, sname), bkps in groups.items():
-    bkps.sort(key=lambda r: r[2] or '', reverse=True)
-    show = bkps[:2]
-    remaining = len(bkps) - 2
-    for i, r in enumerate(show):
-        cluster_id, sched_name, started, bname, phase, errs, warns, full_sch = r
-        if phase == 'Completed':
-            bullet = f'{BLUE}\u25cf{RESET}'
-        elif phase == 'PartiallyFailed':
-            bullet = f'{YELLOW}\u25cf{RESET}'
-        else:
-            bullet = f'{RED}\u25cf{RESET}'
-        if i == 0:
-            cid_disp = f'{CYAN}{cluster_id}{RESET}'
-            cid_pad = cid_w + 9
-            sname_disp = sched_name
-        else:
-            cid_disp = ''
-            cid_pad = cid_w
-            sname_disp = ''
-        print(f'  {cid_disp:<{cid_pad}s}  {sname_disp:<{sch_w}s}  {bullet} {phase:<16s}  {started or \"?\":<22s}  {errs:<4}  {warns:<4}  {DIM}{bname}{RESET}')
-    if remaining > 0:
-        print(f'  {\"\":<{cid_w}s}  {\"\":<{sch_w}s}  {DIM}... {remaining} older backup(s){RESET}')
-" 2>/dev/null || echo "__NONE__")
-
-if [[ "$BKP_TABLE" == "__NONE__" ]]; then
-  printf "  No kubevirt backups found.\n"
-else
-  echo "$BKP_TABLE"
-fi
-
-# --- DataUploads (on each target cluster) ---
-printf "\n"
+STATUS_FOUND=false
 for TC in $TARGET_CLUSTERS; do
-  DU_OUT=$(run_oc_on_cluster "$TC" get datauploads.velero.io -n "$OADP_NS" -o json 2>/dev/null || echo '{"items":[]}')
-  DU_SUMMARY=$(echo "$DU_OUT" | python3 -c "
+  printf "  ${BOLD}%s${RESET}\n" "$TC"
+
+  # Read the replicated acm-dr-virt-backup policy for this cluster
+  BP_JSON=$(run_oc get policy.policy.open-cluster-management.io "${NS}.acm-dr-virt-backup" -n "$TC" -o json 2>/dev/null || echo "")
+  if [[ -z "$BP_JSON" ]]; then
+    printf "    ${DIM}No backup policy found for this cluster${RESET}\n\n"
+    continue
+  fi
+
+  BP_STATUS=$(echo "$BP_JSON" | python3 -c "
 import sys, json
+
+BLUE = '\033[34m'; YELLOW = '\033[33m'; RED = '\033[31m'; GREEN = '\033[32m'
+CYAN = '\033[36m'; BOLD = '\033[1m'; DIM = '\033[2m'; RESET = '\033[0m'
+
+p = json.load(sys.stdin)
+overall = p.get('status', {}).get('compliant', 'Unknown')
+
+if overall == 'Compliant':
+    bullet = f'{GREEN}\u25cf{RESET}'
+elif overall == 'NonCompliant':
+    bullet = f'{RED}\u25cf{RESET}'
+else:
+    bullet = f'{YELLOW}\u25cf{RESET}'
+
+print(f'    Policy: {bullet} {overall}')
+
+details = p.get('status', {}).get('details', [])
+for d in details:
+    tname = d.get('templateMeta', {}).get('name', '?')
+    comp = d.get('compliant', '?')
+    conds = d.get('conditions', [])
+    msg = ''
+    if conds:
+        msg = conds[0].get('message', '')
+
+    if comp == 'Compliant':
+        ic = f'{GREEN}\u2713{RESET}'
+    else:
+        ic = f'{RED}\u2717{RESET}'
+
+    # Collect messages from conditions and history
+    all_msgs = []
+    for c in d.get('conditions', []):
+        m = c.get('message', '')
+        if m and m not in all_msgs:
+            all_msgs.append(m)
+    for h in d.get('history', []):
+        m = h.get('message', '')
+        if m and m not in all_msgs:
+            all_msgs.append(m)
+    msg = all_msgs[0] if all_msgs else ''
+
+    print(f'      {ic} {tname}: {comp}')
+
+    if msg:
+        short_msg = msg[:300]
+        if len(msg) > 300:
+            short_msg += '...'
+        color = YELLOW if comp != 'Compliant' else DIM
+        print(f'        {color}{short_msg}{RESET}')
+" 2>/dev/null || echo "    ${DIM}Could not parse policy status${RESET}")
+
+  echo "$BP_STATUS"
+
+  # Also show the Velero schedules visible via the policy (from the hub side)
+  SCHED_JSON=$(run_oc get schedules.velero.io -n "$OADP_NS" -l "cluster.open-cluster-management.io/backup-schedule-type=kubevirt" -o json 2>/dev/null || echo '{"items":[]}')
+  SCHED_TABLE=$(echo "$SCHED_JSON" | python3 -c "
+import sys, json
+
+BLUE = '\033[34m'; GREEN = '\033[32m'; YELLOW = '\033[33m'; RED = '\033[31m'
+DIM = '\033[2m'; RESET = '\033[0m'
+tc = '$TC'
+tc_id = ''  # we'll match by schedule name containing cluster info
+
 items = json.load(sys.stdin).get('items', [])
 if not items:
-    print('none')
     sys.exit(0)
-by_phase = {}
-for du in items:
-    phase = du.get('status', {}).get('phase', 'Unknown')
-    by_phase[phase] = by_phase.get(phase, 0) + 1
-parts = []
-for phase in ('Completed', 'InProgress', 'Failed', 'Canceling', 'Canceled', 'Unknown'):
-    if phase in by_phase:
-        parts.append(f'{phase}={by_phase[phase]}')
-for phase in sorted(by_phase):
-    if phase not in ('Completed', 'InProgress', 'Failed', 'Canceling', 'Canceled', 'Unknown'):
-        parts.append(f'{phase}={by_phase[phase]}')
-print(f'{len(items)} total: {\"  \".join(parts)}')
 
-BLUE = '\033[34m'; YELLOW = '\033[33m'; RED = '\033[31m'; RESET = '\033[0m'
-failed = [du for du in items if du.get('status',{}).get('phase','') == 'Failed']
-in_progress = [du for du in items if du.get('status',{}).get('phase','') == 'InProgress']
-for du in (failed + in_progress)[:5]:
-    name = du['metadata']['name']
-    phase = du.get('status', {}).get('phase', '?')
-    msg = du.get('status', {}).get('message', '')[:100]
-    started = du.get('status', {}).get('startTimestamp', '?')
-    c = RED if phase == 'Failed' else YELLOW
-    line = f'    {c}\u25cf{RESET} {name}: {phase}  started={started}'
-    if msg:
-        line += f'  msg={msg}'
-    print(line)
-if len(failed) + len(in_progress) > 5:
-    print(f'    ... and {len(failed) + len(in_progress) - 5} more')
-" 2>/dev/null || echo "none")
+# Find schedules for this cluster by checking the backup-cluster label
+found = []
+for s in items:
+    labels = s.get('metadata', {}).get('labels', {})
+    cluster_label = labels.get('cluster.open-cluster-management.io/backup-cluster', '')
+    name = s['metadata']['name']
+    phase = s.get('status', {}).get('phase', 'Unknown')
+    last_backup = s.get('status', {}).get('lastBackup', '')
+    cron = s.get('spec', {}).get('schedule', '?')
 
-  if [[ "$DU_SUMMARY" == "none" ]]; then
-    printf "  ${BOLD}DataUploads (%s):${RESET} none\n" "$TC"
-  else
-    printf "  ${BOLD}DataUploads (%s):${RESET} %s\n" "$TC" "$(echo "$DU_SUMMARY" | head -1)"
-    DU_DETAILS=$(echo "$DU_SUMMARY" | tail -n +2)
-    [[ -n "$DU_DETAILS" ]] && echo "$DU_DETAILS"
+    # Match this schedule to the target cluster
+    # The backup-cluster label has the cluster UID; we also check for cluster name in schedule name
+    # For a definitive match we'd need to map cluster name -> UID, but showing all is also helpful
+    found.append((name, phase, cron, last_backup, cluster_label))
+
+if found:
+    print(f'    Velero Schedules:')
+    for name, phase, cron, last_backup, cid in found:
+        if phase == 'Enabled':
+            bullet = f'{GREEN}\u25cf{RESET}'
+        else:
+            bullet = f'{YELLOW}\u25cf{RESET}'
+        lb = last_backup if last_backup else 'never'
+        print(f'      {bullet} {name}  ({cron})  last={lb}  {DIM}{cid[:12]}{RESET}')
+" 2>/dev/null || true)
+
+  if [[ -n "$SCHED_TABLE" ]]; then
+    echo "$SCHED_TABLE"
   fi
+
+  printf "\n"
+  STATUS_FOUND=true
 done
 
+if [[ "$STATUS_FOUND" != true ]]; then
+  printf "  No virt-labeled clusters found.\n"
+fi
+
 printf "\n${BOLD}Useful commands:${RESET}\n"
-printf "  oc get backups.velero.io -n %s -l %s --sort-by=.status.startTimestamp\n" "$OADP_NS" "$BKP_SCHED_LABEL"
-printf "  oc get policy -A | grep backup.acm-dr-virt\n\n"
+printf "  oc get policy -A | grep backup.acm-dr-virt\n"
+printf "  oc get schedules.velero.io -n %s -l cluster.open-cluster-management.io/backup-schedule-type=kubevirt\n\n" "$OADP_NS"
