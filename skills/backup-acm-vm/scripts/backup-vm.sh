@@ -117,32 +117,13 @@ declare -A MC_CONTEXT_MAP=()  # managed-cluster -> kubeconfig context
 if [[ "$IS_HUB" == true ]]; then
   printf "Looking for ACM search API...\n"
 
-  # Try multiple route names and namespaces
+  # Find the MCH namespace (search API lives in the same namespace)
   SEARCH_HOST=""
-  for SEARCH_NS in open-cluster-management open-cluster-management-search; do
-    for RNAME in search-search-api-route search-api search-search-api; do
-      SEARCH_HOST=$(run_oc get route "$RNAME" -n "$SEARCH_NS" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
-      [[ -n "$SEARCH_HOST" ]] && break 2
-    done
-  done
-
-  # Fallback: find any route with "search" in the name
-  if [[ -z "$SEARCH_HOST" ]]; then
-    SEARCH_HOST=$(run_oc get routes --all-namespaces -o json 2>/dev/null | python3 -c "
-import sys, json
-routes = json.load(sys.stdin).get('items', [])
-for r in routes:
-    name = r['metadata'].get('name', '')
-    if 'search' in name and 'api' in name:
-        print(r['spec']['host'])
-        break
-for r in routes:
-    name = r['metadata'].get('name', '')
-    if 'search' in name and 'console' not in name:
-        print(r['spec']['host'])
-        break
-" 2>/dev/null | head -1 || echo "")
+  MCH_NS=$(run_oc get multiclusterhub --all-namespaces --no-headers 2>/dev/null | awk '{print $1; exit}' || echo "")
+  if [[ -n "$MCH_NS" ]]; then
+    SEARCH_HOST=$(run_oc get route search-api -n "$MCH_NS" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
   fi
+
 
   if [[ -n "$SEARCH_HOST" ]]; then
     printf "  Search API route: ${BOLD}%s${RESET}\n" "$SEARCH_HOST"
@@ -241,17 +222,29 @@ for i, vm in enumerate(items):
     printf "\nQuerying managed clusters via kubeconfig contexts...\n"
 
     ALL_CONTEXTS=$(oc config get-contexts -o name 2>/dev/null || echo "")
-    MC_LIST=$(run_oc get managedclusters --no-headers 2>/dev/null | awk '{print $1}' || echo "")
+    MC_ALL=$(run_oc get managedclusters --no-headers 2>/dev/null || echo "")
     VM_IDX=1
 
     # Identify which ManagedCluster is the local (hub) cluster
-    LOCAL_MC_NAME=$(run_oc get managedclusters -l local-cluster=true --no-headers 2>/dev/null | awk '{print $1;exit}' || echo "")
+    LOCAL_MC_NAME=$(echo "$MC_ALL" | awk '/local-cluster=/{print $1; exit}')
+    [[ -z "$LOCAL_MC_NAME" ]] && LOCAL_MC_NAME=$(run_oc get managedclusters -l local-cluster=true --no-headers 2>/dev/null | awk '{print $1;exit}' || echo "")
+
+    MC_LIST=$(echo "$MC_ALL" | awk '{print $1}')
 
     for MC in $MC_LIST; do
-      printf "  Checking %s..." "$MC"
-
       IS_LOCAL_MC=false
       [[ "$MC" == "$LOCAL_MC_NAME" ]] && IS_LOCAL_MC=true
+
+      # Skip non-Ready clusters (except local-cluster)
+      if [[ "$IS_LOCAL_MC" != true ]]; then
+        MC_STATUS=$(echo "$MC_ALL" | awk -v mc="$MC" '$1==mc {for(i=2;i<=NF;i++) if($i=="True" || $i=="False" || $i=="Unknown") {print $i; exit}}')
+        if [[ "$MC_STATUS" != "True" ]]; then
+          printf "  Checking %s... ${DIM}skipped (status: %s)${RESET}\n" "$MC" "${MC_STATUS:-Unknown}"
+          continue
+        fi
+      fi
+
+      printf "  Checking %s..." "$MC"
 
       MC_CTX=""
       MC_VM_JSON=""
