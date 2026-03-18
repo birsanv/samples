@@ -345,7 +345,13 @@ resolve_selection() {
       for i in $(seq 1 "$count"); do result+=("$i"); done
     elif [[ "$token" =~ ^[0-9,]+$ ]]; then
       IFS=',' read -ra nums <<< "$token"
-      result+=("${nums[@]}")
+      for n in "${nums[@]}"; do
+        if [[ "$n" -ge 1 && "$n" -le "$count" ]]; then
+          result+=("$n")
+        else
+          printf "${YELLOW}[WARN]${RESET} Invalid number: %s (valid range: 1-%s)\n" "$n" "$count" >&2
+        fi
+      done
     elif [[ "$token" == cluster=* ]]; then
       local cval="${token#cluster=}"
       while IFS='|' read -r lidx lcl _ _ _ _ _ _; do
@@ -390,7 +396,7 @@ for vm in items:
         fi
       done <<< "$table"
     else
-      warn "Unknown filter: $token"
+      printf "${YELLOW}[WARN]${RESET} Unknown filter: %s\n" "$token" >&2
     fi
   done
 
@@ -402,13 +408,15 @@ for vm in items:
 # ============================================================
 
 BACKED_UP_TABLE=""
+BACKED_UP_IDX=1
 while IFS='|' read -r idx cl ns name status backup os uid; do
   [[ "$backup" != "-" ]] && {
     if [[ -z "$BACKED_UP_TABLE" ]]; then
-      BACKED_UP_TABLE="${idx}|${cl}|${ns}|${name}|${status}|${backup}|${os}|${uid}"
+      BACKED_UP_TABLE="${BACKED_UP_IDX}|${cl}|${ns}|${name}|${status}|${backup}|${os}|${uid}"
     else
-      BACKED_UP_TABLE="${BACKED_UP_TABLE}"$'\n'"${idx}|${cl}|${ns}|${name}|${status}|${backup}|${os}|${uid}"
+      BACKED_UP_TABLE="${BACKED_UP_TABLE}"$'\n'"${BACKED_UP_IDX}|${cl}|${ns}|${name}|${status}|${backup}|${os}|${uid}"
     fi
+    BACKED_UP_IDX=$((BACKED_UP_IDX + 1))
   }
 done <<< "$VM_TABLE"
 
@@ -429,23 +437,29 @@ if [[ -n "$BACKED_UP_TABLE" ]]; then
   printf "Select VMs to ${RED}remove from backup${RESET}:\n"
   printf "  Numbers (e.g. 1,2,3), or filters: cluster=<name> ns=<ns> os=<type> label=<k>=<v>\n"
   printf "  Press Enter to skip.\n"
-  printf "${BOLD}Remove:${RESET} "
-  read -r REMOVE_SELECTION </dev/tty
 
-  if [[ -n "$REMOVE_SELECTION" ]]; then
-    REMOVE_RESOLVED=$(resolve_selection "$REMOVE_SELECTION" "$VM_TABLE" "$VM_COUNT")
+  REMOVE_RESOLVED=""
+  while true; do
+    printf "${BOLD}Remove:${RESET} "
+    read -r REMOVE_SELECTION </dev/tty
+    [[ -z "$REMOVE_SELECTION" ]] && break
+    REMOVE_RESOLVED=$(resolve_selection "$REMOVE_SELECTION" "$BACKED_UP_TABLE" "$BACKED_UP_COUNT")
+    if [[ -n "$REMOVE_RESOLVED" ]]; then
+      break
+    fi
+    printf "  ${YELLOW}No matching VMs. Try again or press Enter to skip.${RESET}\n"
+  done
+
+  if [[ -n "$REMOVE_RESOLVED" ]]; then
     REMOVE_COUNT=0
 
     for ridx in $REMOVE_RESOLVED; do
-      RLINE=$(echo "$VM_TABLE" | sed -n "${ridx}p")
+      RLINE=$(echo "$BACKED_UP_TABLE" | awk -F'|' -v idx="$ridx" '$1==idx')
       if [[ -z "$RLINE" ]]; then
         warn "Invalid index: $ridx (skipping)"
         continue
       fi
       IFS='|' read -r _ rcl rns rname _ rbackup _ _ <<< "$RLINE"
-      if [[ "$rbackup" == "-" ]]; then
-        continue
-      fi
 
       printf "  Removing backup label from %s/%s (%s)..." "$rns" "$rname" "$rcl"
       if run_oc_on_cluster "$rcl" label virtualmachine.kubevirt.io "$rname" -n "$rns" \
@@ -537,8 +551,19 @@ printf "\n"
 printf "Select VMs to back up:\n"
 printf "  Numbers (e.g. 1,2,3), 'all', or filters: cluster=<name> ns=<ns> os=<type> label=<k>=<v>\n"
 printf "  Combine filters with spaces (e.g. 'ns=default os=fedora'). Press Enter to skip.\n"
-printf "${BOLD}Selection:${RESET} "
-read -r SELECTION </dev/tty
+
+SELECTION=""
+SEL_RESOLVED=""
+while true; do
+  printf "${BOLD}Selection:${RESET} "
+  read -r SELECTION </dev/tty
+  [[ -z "$SELECTION" ]] && break
+  SEL_RESOLVED=$(resolve_selection "$SELECTION" "$AVAIL_TABLE" "$AVAIL_COUNT")
+  if [[ -n "$SEL_RESOLVED" ]]; then
+    break
+  fi
+  printf "  ${YELLOW}No matching VMs. Try again or press Enter to skip.${RESET}\n"
+done
 
 if [[ -z "$SELECTION" ]]; then
   if [[ ${#REMOVED_KEYS[@]} -gt 0 ]]; then
@@ -550,8 +575,6 @@ if [[ -z "$SELECTION" ]]; then
 fi
 
 if [[ "${SKIP_TO_STATUS:-false}" != true ]]; then
-
-SEL_RESOLVED=$(resolve_selection "$SELECTION" "$AVAIL_TABLE" "$AVAIL_COUNT")
 
 declare -a SEL_NS=()
 declare -a SEL_NAME=()
