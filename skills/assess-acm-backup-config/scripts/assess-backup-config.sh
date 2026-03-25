@@ -313,13 +313,16 @@ fi
 # --- 6. Velero backups from storage (who is the active hub?) ---
 header "6. ACM Backups in Storage"
 
+printf "  Checking ${BOLD}active hub ownership${RESET}: each backup carries a hub cluster ID (who wrote it to storage).\n"
+printf "  We compare that ID to this cluster to spot a passive hub still writing, collision, or wrong hub.\n"
+
 BACKUP_JSON=$(run_oc get backups.velero.io -n "$NS" -l velero.io/schedule-name=acm-resources-schedule -o json 2>/dev/null || echo '{"items":[]}')
 BACKUP_COUNT=$(echo "$BACKUP_JSON" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('items',[])))")
 
 ACTIVE_HUB_ID="none"
 
 if [[ "$BACKUP_COUNT" -gt 0 ]]; then
-  info "$BACKUP_COUNT acm-resources-schedule backup(s) found"
+  info "$BACKUP_COUNT ACM resource backups found (acm-resources-schedule)"
   ACTIVE_HUB_ID=$(echo "$BACKUP_JSON" | python3 -c "
 import sys, json
 items = json.load(sys.stdin).get('items', [])
@@ -328,28 +331,40 @@ if items:
     labels = items[0].get('metadata',{}).get('labels',{})
     print(labels.get('cluster.open-cluster-management.io/backup-cluster', 'unknown'))
 " 2>/dev/null)
-  printf "  Latest backup created by: ${BOLD}%s${RESET}\n" "$(hub_label "$ACTIVE_HUB_ID")"
+  printf "  Latest backup in storage was written by hub: ${BOLD}%s${RESET}\n" "$(hub_label "$ACTIVE_HUB_ID")"
 
   # Warn if this cluster should be active but backups come from elsewhere
   if [[ "$ACTIVE_HUB_ID" != "$CLUSTER_ID" ]]; then
     THIS_SHOULD_BE_ACTIVE=false
+    WHY_EXPECT_ACTIVE=""
     if [[ -n "$FAILOVER_HUB" && "$FAILOVER_HUB" == "$CLUSTER_ID" ]]; then
       THIS_SHOULD_BE_ACTIVE=true
+      WHY_EXPECT_ACTIVE="this hub ran the last managed-clusters activation restore (failover), so it should own new backups"
     fi
     if [[ "$HAS_SCHEDULE" == true && "$SCHEDULE_PHASE" != "BackupCollision" && "$SCHEDULE_PHASE" != "Paused" ]]; then
       THIS_SHOULD_BE_ACTIVE=true
+      if [[ -n "$WHY_EXPECT_ACTIVE" ]]; then
+        WHY_EXPECT_ACTIVE+="; "
+      fi
+      WHY_EXPECT_ACTIVE+="this hub has a BackupSchedule that is running (not paused, not in collision)"
     fi
     if [[ "$THIS_SHOULD_BE_ACTIVE" == true ]]; then
-      warn "This cluster should be the active hub, but the latest backups come from a different cluster."
-      printf "     Expected backups from this cluster (%s), got %s.\n" "$CLUSTER_ID" "$ACTIVE_HUB_ID"
+      warn "Active hub ownership mismatch — backups in storage do not match this cluster."
+      printf "     ${YELLOW}Why we expect this hub to be the active writer:${RESET} %s\n" "$WHY_EXPECT_ACTIVE"
+      printf "     ${YELLOW}What we see in storage:${RESET} the newest ACM resource backup was written by hub %s, not this cluster (%s).\n" "$(hub_label "$ACTIVE_HUB_ID")" "$CLUSTER_ID"
+      printf "     ${YELLOW}What that usually means:${RESET} another hub is still writing the same backup store, or ownership did not switch after failover — review BackupCollision, passive sync, and which hub should be active.\n"
     fi
   fi
 else
   warn "No acm-resources-schedule backups found in storage"
 fi
 
-# --- 7. Validation policy (primary active hub check) ---
-header "7. Active Hub Detection (Validation Policy)"
+# --- 7. Heartbeat / schedule activity (which hub ran the backup cron recently) ---
+header "7. Active Hub Detection"
+
+printf "  ${BOLD}What this checks:${RESET} whether a hub is actually running the backup schedule and writing short-lived\n"
+printf "  \"heartbeat\" snapshots to the shared storage — not full ACM resource backups (those are step 6).\n"
+printf "  We only use the latest heartbeat to read ${BOLD}when${RESET} it ran and ${BOLD}which hub${RESET} wrote it (cluster ID label).\n"
 
 VAL_JSON=$(run_oc get backups.velero.io -n "$NS" -l velero.io/schedule-name=acm-validation-policy-schedule -o json 2>/dev/null || echo '{"items":[]}')
 VAL_COUNT=$(echo "$VAL_JSON" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('items',[])))")
@@ -384,12 +399,13 @@ items = json.load(sys.stdin).get('items', [])
 items.sort(key=lambda b: b.get('status',{}).get('startTimestamp',''), reverse=True)
 if items: print(items[0].get('metadata',{}).get('labels',{}).get('cluster.open-cluster-management.io/backup-cluster','unknown'))
 " 2>/dev/null)
-  info "Validation backup: $LATEST_VAL_NAME  phase=$LATEST_VAL_PHASE  started=$LATEST_VAL_TS"
-  printf "  Created by: ${BOLD}%s${RESET}\n" "$(hub_label "$VAL_HUB_ID")"
+  info "Recent schedule activity: last heartbeat started ${LATEST_VAL_TS} (phase=${LATEST_VAL_PHASE})."
+  printf "  That run was written by hub: ${BOLD}%s${RESET}\n" "$(hub_label "$VAL_HUB_ID")"
+  printf "  ${YELLOW}(Side note: Velero Backup object ${LATEST_VAL_NAME} — internal schedule acm-validation-policy-schedule — is only how we detect this.)${RESET}\n"
 
   if [[ "$VAL_HUB_ID" == "$CLUSTER_ID" ]]; then
     VAL_OWNED_BY_THIS_CLUSTER=true
-    info "This cluster is the active hub (validation backups are created by this cluster)"
+    info "This cluster is the hub that last ran the schedule (heartbeat on storage matches this cluster)."
     if [[ "$HAS_SCHEDULE" != true ]]; then
       warn "But no BackupSchedule exists -- backups will stop after the current interval expires."
     elif [[ "$SCHEDULE_PHASE" == "Paused" ]]; then
@@ -398,10 +414,10 @@ if items: print(items[0].get('metadata',{}).get('labels',{}).get('cluster.open-c
       warn "BackupSchedule is in BackupCollision -- another cluster has started writing to the same storage."
     fi
   else
-    printf "  Another hub (%s) is the active cluster creating backups.\n" "$VAL_HUB_ID"
+    printf "  The heartbeat was written by hub %s — that hub is the active writer to storage, not this cluster.\n" "$(hub_label "$VAL_HUB_ID")"
   fi
 else
-  warn "No acm-validation-policy-schedule backups found -- no hub is actively creating backups."
+  warn "No recent heartbeat backups found — no evidence the backup cron ran recently (or TTL expired before you looked)."
 fi
 
 # --- 8. Post-failover detection (display pre-fetched data) ---
@@ -613,17 +629,17 @@ if [[ -n "$FAILOVER_HUB" && "$FAILOVER_HUB" == "$CLUSTER_ID" ]]; then
     printf "                     ${YELLOW}But latest backups in storage come from hub %s -- that hub should be passive.${RESET}\n" "$ACTIVE_HUB_ID"
   fi
 
-# 2. Validation backups owned by this cluster → active hub
+# 2. Heartbeat backups owned by this cluster → active hub
 elif [[ "$VAL_OWNED_BY_THIS_CLUSTER" == true ]]; then
   ROLE="ACTIVE"
-  printf "Role:                ${GREEN}ACTIVE HUB${RESET} (validation backups confirm this cluster is active"
+  printf "Role:                ${GREEN}ACTIVE HUB${RESET} (schedule heartbeat on storage confirms this cluster is active"
   if [[ "$HAS_SCHEDULE" == true && "$SCHEDULE_PHASE" != "BackupCollision" && "$SCHEDULE_PHASE" != "Paused" ]]; then
     printf ", BackupSchedule: %s, phase: %s" "$SCHEDULE_NAME" "$SCHEDULE_PHASE"
   fi
   printf ")\n"
   print_schedule_health
 
-# 3. Validation backups exist but from another hub
+# 3. Heartbeat exists but from another hub
 elif [[ "$CRON_ACTIVE" == true && "$VAL_HUB_ID" != "unknown" ]]; then
   if [[ "$HAS_RESTORE" == true && "$RESTORE_MC" == "skip" ]]; then
     print_passive_role
@@ -642,17 +658,17 @@ elif [[ "$CRON_ACTIVE" == true && "$VAL_HUB_ID" != "unknown" ]]; then
   fi
   printf "Active hub:          ${BOLD}%s${RESET}\n" "$(hub_label "$VAL_HUB_ID")"
 
-# 4. No validation backups at all
+# 4. No heartbeat backups at all
 else
   if [[ "$HAS_RESTORE" == true && "$RESTORE_MC" == "skip" ]]; then
     print_passive_role
-    printf "                     ${YELLOW}No validation backups found -- the active hub's cron may have stopped.${RESET}\n"
+    printf "                     ${YELLOW}No heartbeat backups found -- the active hub's backup cron may have stopped.${RESET}\n"
   elif [[ "$HAS_RESTORE" == true && "$RESTORE_MC" != "skip" ]]; then
     ROLE="FAILOVER"
     printf "Role:                ${YELLOW}FAILOVER / ACTIVATION${RESET} (Restore with MC=%s)\n" "$RESTORE_MC"
   elif [[ "$HAS_SCHEDULE" == true ]]; then
     ROLE="ACTIVE_NO_VALIDATION"
-    printf "Role:                ${YELLOW}ACTIVE HUB (no validation backups yet)${RESET} (BackupSchedule: %s, phase: %s)\n" "$SCHEDULE_NAME" "$SCHEDULE_PHASE"
+    printf "Role:                ${YELLOW}ACTIVE HUB (no heartbeat in storage yet)${RESET} (BackupSchedule: %s, phase: %s)\n" "$SCHEDULE_NAME" "$SCHEDULE_PHASE"
   else
     ROLE="NONE"
     printf "Role:                ${RED}NOT CONFIGURED${RESET} (no BackupSchedule or Restore)\n"
@@ -728,7 +744,7 @@ fi
 # Passive cluster but the active cron is not running anywhere
 if [[ ("$ROLE" == "PASSIVE" || "$ROLE" == "PASSIVE_SYNC") && "$CRON_ACTIVE" == false ]]; then
   add_issue "WARN" \
-    "This cluster is passive but no validation-policy backups exist. The active hub's cron may have stopped or backups expired." \
+    "This cluster is passive but no heartbeat backups exist (schedule activity). The active hub's cron may have stopped or backups expired." \
     "remote_only"
 fi
 

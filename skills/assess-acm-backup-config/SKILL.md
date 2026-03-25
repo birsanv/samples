@@ -1,6 +1,6 @@
 ---
 name: assess-acm-backup-config
-description: Assess whether the current OpenShift cluster is in an ACM active-passive backup configuration. Detects backup schedules, passive restores, active hub identity, and validation cron status. Use when the user asks about ACM backup status, active-passive config, which hub is active, or backup health.
+description: Assess whether the current OpenShift cluster is in an ACM active-passive backup configuration. Detects backup schedules, passive restores, active hub identity, heartbeat schedule activity, and governance policy compliance. Use when the user asks about ACM backup status, active-passive config, which hub is active, or backup health.
 allowed-tools: Bash, Shell, Read, Grep, Glob
 ---
 
@@ -45,8 +45,8 @@ The script requires `oc` CLI and a valid kubeconfig context for an OpenShift clu
 | Storage connected | `BackupStorageLocation` with phase=Available and OADP owner |
 | BackupSchedule state | `BackupSchedule` resource phase (supplementary info) |
 | Passive hub | `Restore` with `veleroManagedClustersBackupName: skip` |
-| ACM backups in storage | Latest `acm-resources-schedule` backup's `backup-cluster` label |
-| **Active hub (primary)** | **`acm-validation-policy-schedule` backups exist AND created by this cluster** |
+| ACM backups in storage | **Active hub ownership:** latest `acm-resources-schedule` backup’s `backup-cluster` label vs this cluster — warns if we expect this hub to be active (failover and/or running `BackupSchedule`) but storage shows another hub wrote the newest backup |
+| **Active hub (primary)** | **Heartbeat / schedule activity:** latest short-lived backup from the policy heartbeat schedule exists **and** `backup-cluster` label matches this cluster (proves this hub ran the backup cron) |
 | Post-failover | Backups with `restore-cluster` label (managed-clusters restore ran) |
 | **Policy validation** | **`backup-restore-enabled` and `backup-restore-auto-import` policy compliance + per-template status** |
 
@@ -56,19 +56,19 @@ The script requires `oc` CLI and a valid kubeconfig context for an OpenShift clu
 
 | Role | Meaning |
 |------|---------|
-| **ACTIVE HUB** | Validation backups exist and were created by this cluster |
-| **ACTIVE HUB (paused)** | Owns validation backups, but BackupSchedule is paused |
-| **ACTIVE HUB (schedule missing)** | Owns validation backups, but BackupSchedule is gone |
-| **ACTIVE HUB (collision)** | Owns validation backups, but another cluster started writing |
+| **ACTIVE HUB** | Heartbeat / schedule activity on storage shows this cluster as the writer |
+| **ACTIVE HUB (paused)** | Heartbeat shows this cluster active, but BackupSchedule is paused |
+| **ACTIVE HUB (schedule missing)** | Heartbeat shows this cluster active, but BackupSchedule is gone |
+| **ACTIVE HUB (collision)** | Heartbeat shows this cluster active, but another cluster started writing |
 | **PASSIVE HUB** | Has a `Restore` with `ManagedClusters=skip` |
 | **PASSIVE HUB (sync)** | Passive + `syncRestoreWithNewBackups: true` |
-| **COLLIDING** | `BackupSchedule` exists but another hub owns validation backups |
+| **COLLIDING** | `BackupSchedule` exists but another hub owns the latest heartbeat / resource backups |
 | **FAILOVER / ACTIVATION** | `Restore` with `ManagedClusters` != skip |
 | **NOT CONFIGURED** | No `BackupSchedule` or `Restore` found |
 
 ### How active hub is determined
 
-The primary indicator is the `acm-validation-policy-schedule` backup -- a short-lived heartbeat (TTL = cron interval + 5 min). If it exists and was created by this cluster (`backup-cluster` label), this is the active hub. The `BackupSchedule` state is then checked as supplementary context (missing, paused, collision).
+The primary indicator is a **short-lived heartbeat backup** produced on a fixed cadence (Velero schedule `acm-validation-policy-schedule`, TTL ≈ cron interval + a few minutes). It proves **which hub last ran the backup schedule** against shared storage. If the latest heartbeat exists and was created by this cluster (`backup-cluster` label), this is the active hub. The `BackupSchedule` state is then checked as supplementary context (missing, paused, collision).
 
 ### Diagnostic analysis
 
@@ -80,7 +80,7 @@ The script cross-references failover history, backup ownership, and schedule sta
 | This cluster ran failover but another hub owns latest backups | The other hub should be passive (unless it also ran restore-all) |
 | This cluster has a BackupSchedule but another hub owns backups | Likely collision -- only one hub should write backups |
 | Passive cluster but no backups in storage | Active hub may not be running, or BSL not syncing |
-| Passive cluster but no validation backups | Active hub's cron may have stopped |
+| Passive cluster but no heartbeat backups | Active hub's backup cron may have stopped or TTL expired |
 | `backup-restore-enabled` policy NonCompliant | One or more validation templates report violations |
 | `backup-restore-auto-import` policy NonCompliant | Auto-import secret or label issues on managed clusters |
 
