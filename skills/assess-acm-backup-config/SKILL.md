@@ -48,7 +48,7 @@ The script requires `oc` CLI and a valid kubeconfig context for an OpenShift clu
 | ACM backups in storage | **Active hub ownership:** latest `acm-resources-schedule` backup’s `backup-cluster` label vs this cluster — warns if we expect this hub to be active (failover and/or running `BackupSchedule`) but storage shows another hub wrote the newest backup |
 | **Active hub (primary)** | **Heartbeat / schedule activity:** latest short-lived backup from the policy heartbeat schedule exists **and** `backup-cluster` label matches this cluster (proves this hub ran the backup cron) |
 | Post-failover | Backups with `restore-cluster` label (managed-clusters restore ran) |
-| **Policy validation** | **`backup-restore-enabled` and `backup-restore-auto-import` policy compliance + per-template status** |
+| **Policy validation** | **`backup-restore-enabled` policy compliance + per-template details (in ISSUES when NonCompliant)** |
 
 ## Interpreting Results
 
@@ -81,12 +81,11 @@ The script cross-references failover history, backup ownership, and schedule sta
 | This cluster has a BackupSchedule but another hub owns backups | Likely collision -- only one hub should write backups |
 | Passive cluster but no backups in storage | Active hub may not be running, or BSL not syncing |
 | Passive cluster but no heartbeat backups | Active hub's backup cron may have stopped or TTL expired |
-| `backup-restore-enabled` policy NonCompliant | One or more validation templates report violations |
-| `backup-restore-auto-import` policy NonCompliant | Auto-import secret or label issues on managed clusters |
+| `backup-restore-enabled` policy NonCompliant | One or more validation templates report violations (see ISSUES DETECTED) |
 
-### Policy validation (section 9)
+### Policy validation (in ISSUES)
 
-The script queries the `backup-restore-enabled` and `backup-restore-auto-import` governance policies and shows per-template compliance. These policies are installed by the backup Helm chart when `cluster-backup` is enabled on `MultiClusterHub`.
+The script queries the `backup-restore-enabled` governance policy for issue detection. When the policy is NonCompliant, the **ISSUES DETECTED** section includes full per-template `[VIOLATION]` lines and messages. These policies are installed by the backup Helm chart when `cluster-backup` is enabled on `MultiClusterHub`.
 
 **`backup-restore-enabled` templates:**
 

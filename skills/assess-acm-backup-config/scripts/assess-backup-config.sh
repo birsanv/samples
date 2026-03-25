@@ -98,8 +98,8 @@ if [[ -z "$CLUSTER_ID" ]]; then
 fi
 printf "This cluster ID: ${BOLD}%s${RESET}\n" "$CLUSTER_ID"
 
-# --- 2. OADP / Velero namespace ---
-header "2. Backup Namespace & OADP"
+# --- 2. OADP namespace & BackupStorageLocation ---
+header "2. Backup Namespace, OADP & BSL"
 
 if ! run_oc get namespace "$NS" &>/dev/null; then
   err "Namespace $NS does not exist. OADP/Velero is not installed for ACM backup."
@@ -114,9 +114,6 @@ if [[ "$DPA_COUNT" -gt 0 ]]; then
 else
   warn "No DataProtectionApplication in $NS"
 fi
-
-# --- 3. BackupStorageLocation ---
-header "3. Backup Storage Location (BSL)"
 
 BSL_JSON=$(run_oc get backupstoragelocations.velero.io -n "$NS" -o json 2>/dev/null || echo '{"items":[]}')
 BSL_COUNT=$(echo "$BSL_JSON" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('items',[])))")
@@ -151,9 +148,7 @@ else
   warn "No BSL is both Available and owned by OADP"
 fi
 
-# --- 4. BackupSchedule ---
-header "4. ACM BackupSchedule"
-
+# --- BackupSchedule (data only; no section header) ---
 SCHED_JSON=$(run_oc get backupschedules.cluster.open-cluster-management.io -n "$NS" -o json 2>/dev/null || echo '{"items":[]}')
 SCHED_COUNT=$(echo "$SCHED_JSON" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('items',[])))")
 
@@ -163,15 +158,6 @@ SCHEDULE_NAME=""
 
 if [[ "$SCHED_COUNT" -gt 0 ]]; then
   HAS_SCHEDULE=true
-  echo "$SCHED_JSON" | python3 -c "
-import sys, json
-items = json.load(sys.stdin).get('items', [])
-for s in items:
-    name = s['metadata']['name']
-    phase = s.get('status', {}).get('phase', 'Unknown')
-    msg = s.get('status', {}).get('lastMessage', '')
-    print(f'  {name}: phase={phase}  msg={msg}')
-" 2>/dev/null
   SCHEDULE_PHASE=$(echo "$SCHED_JSON" | python3 -c "
 import sys, json
 items = json.load(sys.stdin).get('items', [])
@@ -182,11 +168,9 @@ import sys, json
 items = json.load(sys.stdin).get('items', [])
 if items: print(items[0]['metadata']['name'])
 " 2>/dev/null)
-else
-  info "No BackupSchedule found on this cluster"
 fi
 
-# --- Pre-fetch failover data (needed by step 5 and step 8) ---
+# --- Pre-fetch failover data (needed for failover detection and summary) ---
 FAILOVER_JSON=$(run_oc get backups.velero.io -n "$NS" -l cluster.open-cluster-management.io/restore-cluster -o json 2>/dev/null || echo '{"items":[]}')
 FAILOVER_COUNT=$(echo "$FAILOVER_JSON" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('items',[])))")
 FAILOVER_HUB=""
@@ -201,9 +185,7 @@ if items:
 " 2>/dev/null)
 fi
 
-# --- 5. ACM Restore (passive hub indicator) ---
-header "5. ACM Restore"
-
+# --- Restore (data only; no section header) ---
 RESTORE_JSON=$(run_oc get restores.cluster.open-cluster-management.io -n "$NS" -o json 2>/dev/null || echo '{"items":[]}')
 RESTORE_COUNT=$(echo "$RESTORE_JSON" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('items',[])))")
 
@@ -217,24 +199,6 @@ RESTORE_COMPLETION_TS=""
 if [[ "$RESTORE_COUNT" -gt 0 ]]; then
   HAS_RESTORE=true
 
-  # List all restores
-  echo "$RESTORE_JSON" | python3 -c "
-import sys, json
-items = json.load(sys.stdin).get('items', [])
-for r in items:
-    name = r['metadata']['name']
-    phase = r.get('status', {}).get('phase', 'Unknown')
-    mc = r.get('spec', {}).get('veleroManagedClustersBackupName', 'not set')
-    sync = r.get('spec', {}).get('syncRestoreWithNewBackups', False)
-    interval = r.get('spec', {}).get('restoreSyncInterval', '')
-    print(f'  {name}: phase={phase}  MC={mc}  sync={sync}  interval={interval}')
-" 2>/dev/null
-
-  if [[ "$RESTORE_COUNT" -gt 1 ]]; then
-    printf "  ${YELLOW}Multiple Restore resources found -- using the most recent one.${RESET}\n"
-  fi
-
-  # Extract fields from the latest restore (sorted by creationTimestamp)
   RESTORE_DETAILS=$(echo "$RESTORE_JSON" | python3 -c "
 import sys, json
 items = json.load(sys.stdin).get('items', [])
@@ -255,74 +219,15 @@ print(f'{name}|{mc}|{sync}|{phase}|{interval}|{completion}')
   RESTORE_PHASE=$(echo "$RESTORE_DETAILS" | cut -d'|' -f4)
   RESTORE_SYNC_INTERVAL=$(echo "$RESTORE_DETAILS" | cut -d'|' -f5)
   RESTORE_COMPLETION_TS=$(echo "$RESTORE_DETAILS" | cut -d'|' -f6)
-
-  if [[ "$RESTORE_COUNT" -gt 1 ]]; then
-    printf "  Using: ${BOLD}%s${RESET} (phase=%s)\n" "$RESTORE_NAME_LATEST" "$RESTORE_PHASE"
-  fi
-
-  if [[ "$RESTORE_MC" == "skip" ]]; then
-    if [[ "$RESTORE_PHASE" == "Enabled" || "$RESTORE_PHASE" == "EnabledWithErrors" ]]; then
-      SYNC_MSG=""
-      if [[ -n "$RESTORE_SYNC_INTERVAL" ]]; then
-        SYNC_MSG=" every $RESTORE_SYNC_INTERVAL"
-      fi
-      info "Passive hub -- actively syncing passive data${SYNC_MSG} (phase: $RESTORE_PHASE)"
-    elif [[ "$RESTORE_PHASE" == "Finished" || "$RESTORE_PHASE" == "FinishedWithErrors" ]]; then
-      COMPLETED_MSG=""
-      if [[ -n "$RESTORE_COMPLETION_TS" ]]; then
-        COMPLETED_MSG=" at $RESTORE_COMPLETION_TS"
-      fi
-      if [[ -n "$FAILOVER_HUB" && "$FAILOVER_HUB" == "$CLUSTER_ID" ]]; then
-        warn "This cluster performed the last failover (managed-clusters restore) -- it is the active hub."
-        printf "     A subsequent Restore with MC=skip was run (completed${COMPLETED_MSG}), likely to re-sync or fix passive data.\n"
-        printf "     Regardless, this cluster should be the active hub and must have a BackupSchedule running.\n"
-        if [[ "$HAS_SCHEDULE" != true ]]; then
-          err "No BackupSchedule found -- backups are not being created. Create one now."
-        elif [[ "$SCHEDULE_PHASE" == "Paused" ]]; then
-          err "BackupSchedule is paused -- no new backups will be created. Unpause it."
-        elif [[ "$SCHEDULE_PHASE" == "BackupCollision" ]]; then
-          err "BackupSchedule is in BackupCollision -- another cluster started writing to the same storage."
-        else
-          info "BackupSchedule is running (phase: $SCHEDULE_PHASE)"
-        fi
-      else
-        warn "Passive hub but data is NOT syncing -- restore completed once${COMPLETED_MSG} (phase: $RESTORE_PHASE)"
-        printf "     Passive data will become stale. To keep syncing, create a new Restore with syncRestoreWithNewBackups: true.\n"
-      fi
-    else
-      printf "  Restore phase: %s (MC=skip)\n" "$RESTORE_PHASE"
-    fi
-  fi
-else
-  # Determine if this cluster should be passive (not the active hub)
-  THIS_IS_ACTIVE=false
-  if [[ -n "$FAILOVER_HUB" && "$FAILOVER_HUB" == "$CLUSTER_ID" ]]; then
-    THIS_IS_ACTIVE=true
-  elif [[ "$HAS_SCHEDULE" == true && "$SCHEDULE_PHASE" != "BackupCollision" && "$SCHEDULE_PHASE" != "Paused" ]]; then
-    THIS_IS_ACTIVE=true
-  fi
-
-  if [[ "$THIS_IS_ACTIVE" == true ]]; then
-    info "No Restore found -- not a passive hub"
-  else
-    warn "No Restore found. If another hub is the active hub, this cluster should have a"
-    printf "     Restore with syncRestoreWithNewBackups: true and MC=skip to be a proper passive hub.\n"
-  fi
 fi
 
-# --- 6. Velero backups from storage (who is the active hub?) ---
-header "6. ACM Backups in Storage"
-
-printf "  Checking ${BOLD}active hub ownership${RESET}: each backup carries a hub cluster ID (who wrote it to storage).\n"
-printf "  We compare that ID to this cluster to spot a passive hub still writing, collision, or wrong hub.\n"
-
+# --- ACM backups in storage (data for role / issues; narrative under SUMMARY → Details) ---
 BACKUP_JSON=$(run_oc get backups.velero.io -n "$NS" -l velero.io/schedule-name=acm-resources-schedule -o json 2>/dev/null || echo '{"items":[]}')
 BACKUP_COUNT=$(echo "$BACKUP_JSON" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('items',[])))")
 
 ACTIVE_HUB_ID="none"
 
 if [[ "$BACKUP_COUNT" -gt 0 ]]; then
-  info "$BACKUP_COUNT ACM resource backups found (acm-resources-schedule)"
   ACTIVE_HUB_ID=$(echo "$BACKUP_JSON" | python3 -c "
 import sys, json
 items = json.load(sys.stdin).get('items', [])
@@ -331,41 +236,9 @@ if items:
     labels = items[0].get('metadata',{}).get('labels',{})
     print(labels.get('cluster.open-cluster-management.io/backup-cluster', 'unknown'))
 " 2>/dev/null)
-  printf "  Latest backup in storage was written by hub: ${BOLD}%s${RESET}\n" "$(hub_label "$ACTIVE_HUB_ID")"
-
-  # Warn if this cluster should be active but backups come from elsewhere
-  if [[ "$ACTIVE_HUB_ID" != "$CLUSTER_ID" ]]; then
-    THIS_SHOULD_BE_ACTIVE=false
-    WHY_EXPECT_ACTIVE=""
-    if [[ -n "$FAILOVER_HUB" && "$FAILOVER_HUB" == "$CLUSTER_ID" ]]; then
-      THIS_SHOULD_BE_ACTIVE=true
-      WHY_EXPECT_ACTIVE="this hub ran the last managed-clusters activation restore (failover), so it should own new backups"
-    fi
-    if [[ "$HAS_SCHEDULE" == true && "$SCHEDULE_PHASE" != "BackupCollision" && "$SCHEDULE_PHASE" != "Paused" ]]; then
-      THIS_SHOULD_BE_ACTIVE=true
-      if [[ -n "$WHY_EXPECT_ACTIVE" ]]; then
-        WHY_EXPECT_ACTIVE+="; "
-      fi
-      WHY_EXPECT_ACTIVE+="this hub has a BackupSchedule that is running (not paused, not in collision)"
-    fi
-    if [[ "$THIS_SHOULD_BE_ACTIVE" == true ]]; then
-      warn "Active hub ownership mismatch — backups in storage do not match this cluster."
-      printf "     ${YELLOW}Why we expect this hub to be the active writer:${RESET} %s\n" "$WHY_EXPECT_ACTIVE"
-      printf "     ${YELLOW}What we see in storage:${RESET} the newest ACM resource backup was written by hub %s, not this cluster (%s).\n" "$(hub_label "$ACTIVE_HUB_ID")" "$CLUSTER_ID"
-      printf "     ${YELLOW}What that usually means:${RESET} another hub is still writing the same backup store, or ownership did not switch after failover — review BackupCollision, passive sync, and which hub should be active.\n"
-    fi
-  fi
-else
-  warn "No acm-resources-schedule backups found in storage"
 fi
 
-# --- 7. Heartbeat / schedule activity (which hub ran the backup cron recently) ---
-header "7. Active Hub Detection"
-
-printf "  ${BOLD}What this checks:${RESET} whether a hub is actually running the backup schedule and writing short-lived\n"
-printf "  \"heartbeat\" snapshots to the shared storage — not full ACM resource backups (those are step 6).\n"
-printf "  We only use the latest heartbeat to read ${BOLD}when${RESET} it ran and ${BOLD}which hub${RESET} wrote it (cluster ID label).\n"
-
+# --- Heartbeat / schedule activity (data only; no section header) ---
 VAL_JSON=$(run_oc get backups.velero.io -n "$NS" -l velero.io/schedule-name=acm-validation-policy-schedule -o json 2>/dev/null || echo '{"items":[]}')
 VAL_COUNT=$(echo "$VAL_JSON" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('items',[])))")
 
@@ -399,62 +272,27 @@ items = json.load(sys.stdin).get('items', [])
 items.sort(key=lambda b: b.get('status',{}).get('startTimestamp',''), reverse=True)
 if items: print(items[0].get('metadata',{}).get('labels',{}).get('cluster.open-cluster-management.io/backup-cluster','unknown'))
 " 2>/dev/null)
-  info "Recent schedule activity: last heartbeat started ${LATEST_VAL_TS} (phase=${LATEST_VAL_PHASE})."
-  printf "  That run was written by hub: ${BOLD}%s${RESET}\n" "$(hub_label "$VAL_HUB_ID")"
-  printf "  ${YELLOW}(Side note: Velero Backup object ${LATEST_VAL_NAME} — internal schedule acm-validation-policy-schedule — is only how we detect this.)${RESET}\n"
-
   if [[ "$VAL_HUB_ID" == "$CLUSTER_ID" ]]; then
     VAL_OWNED_BY_THIS_CLUSTER=true
-    info "This cluster is the hub that last ran the schedule (heartbeat on storage matches this cluster)."
-    if [[ "$HAS_SCHEDULE" != true ]]; then
-      warn "But no BackupSchedule exists -- backups will stop after the current interval expires."
-    elif [[ "$SCHEDULE_PHASE" == "Paused" ]]; then
-      warn "But the BackupSchedule is paused -- no new backups will be created in the next interval."
-    elif [[ "$SCHEDULE_PHASE" == "BackupCollision" ]]; then
-      warn "BackupSchedule is in BackupCollision -- another cluster has started writing to the same storage."
-    fi
-  else
-    printf "  The heartbeat was written by hub %s — that hub is the active writer to storage, not this cluster.\n" "$(hub_label "$VAL_HUB_ID")"
   fi
-else
-  warn "No recent heartbeat backups found — no evidence the backup cron ran recently (or TTL expired before you looked)."
 fi
 
-# --- 8. Post-failover detection (display pre-fetched data) ---
-header "8. Post-Failover Detection"
-
-if [[ "$FAILOVER_COUNT" -gt 0 ]]; then
-  printf "  Last failover (managed-clusters restore) by: ${BOLD}%s${RESET}\n" "$(hub_label "$FAILOVER_HUB")"
-  if [[ "$FAILOVER_HUB" == "$CLUSTER_ID" ]]; then
-    printf "  ${BOLD}>> This cluster activated managed clusters -- it should be running a BackupSchedule.${RESET}\n"
-  else
-    printf "  >> Hub %s activated managed clusters -- it should be the active hub; this cluster should be passive.\n" "$FAILOVER_HUB"
-  fi
-else
-  info "No failover restores detected"
-fi
-
-# --- 9. Backup & Restore Policy Validation ---
-header "9. Backup & Restore Policy Validation"
-
+# --- backup-restore-enabled policy (load for ISSUES only; no dedicated section) ---
 POLICY_FOUND=false
 POLICY_COMPLIANT=true
 POLICY_VIOLATION_TEMPLATES=""
-AI_COMPLIANT=true
-AI_VIOLATION_TEMPLATES=""
+BR_COMPLIANCE=""
+BR_REPLICATED=""
 
 POLICY_CRD_EXISTS=true
 if ! run_oc get crd policies.policy.open-cluster-management.io &>/dev/null; then
   POLICY_CRD_EXISTS=false
-  warn "Policy CRD not found -- governance framework may not be installed."
 fi
 
 if [[ "$POLICY_CRD_EXISTS" == true ]]; then
   LOCAL_CLUSTER_NAME=$(run_oc get managedclusters.cluster.open-cluster-management.io -l local-cluster=true --no-headers 2>/dev/null | awk '{print $1;exit}' || echo "")
   [[ -z "$LOCAL_CLUSTER_NAME" ]] && LOCAL_CLUSTER_NAME="local-cluster"
 
-  # ---- backup-restore-enabled ----
-  printf "${BOLD}backup-restore-enabled policy:${RESET}\n"
   BR_ROOT=$(run_oc get policy.policy.open-cluster-management.io backup-restore-enabled -n "$NS" -o json 2>/dev/null || echo "")
   if [[ -z "$BR_ROOT" ]]; then
     BR_SEARCH_NS=$(run_oc get policy.policy.open-cluster-management.io -A --no-headers 2>/dev/null | awk '$2=="backup-restore-enabled"{print $1;exit}' || echo "")
@@ -463,51 +301,17 @@ if [[ "$POLICY_CRD_EXISTS" == true ]]; then
     fi
   fi
 
-  if [[ -z "$BR_ROOT" ]]; then
-    warn "Policy not found. It is installed when cluster-backup is enabled on MultiClusterHub."
-    printf "  If hub self-management is disabled (disableHubSelfManagement=true),\n"
-    printf "  set the is-hub=true label on the ManagedCluster resource representing the local cluster.\n"
-  else
+  if [[ -n "$BR_ROOT" ]]; then
     POLICY_FOUND=true
     BR_COMPLIANCE=$(echo "$BR_ROOT" | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',{}).get('compliant','Unknown'))" 2>/dev/null || echo "Unknown")
 
-    if [[ "$BR_COMPLIANCE" == "Compliant" ]]; then
-      info "Overall: Compliant"
-    else
-      err "Overall: ${BR_COMPLIANCE}"
+    if [[ "$BR_COMPLIANCE" != "Compliant" ]]; then
       POLICY_COMPLIANT=false
     fi
 
     BR_ORIG_NS=$(echo "$BR_ROOT" | python3 -c "import sys,json;print(json.load(sys.stdin)['metadata']['namespace'])" 2>/dev/null || echo "$NS")
     BR_REPLICATED=$(run_oc get policy.policy.open-cluster-management.io "${BR_ORIG_NS}.backup-restore-enabled" -n "$LOCAL_CLUSTER_NAME" -o json 2>/dev/null || echo "")
     [[ -z "$BR_REPLICATED" ]] && BR_REPLICATED="$BR_ROOT"
-
-    echo "$BR_REPLICATED" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-details = data.get('status', {}).get('details', [])
-for d in details:
-    name = d.get('templateMeta', {}).get('name', 'unknown')
-    compliant = d.get('compliant', 'Unknown')
-    history = d.get('history', [])
-    msg = ''
-    if history:
-        msg = history[0].get('message', '')
-    if compliant == 'Compliant':
-        print(f'  \033[32m[OK]\033[0m {name}')
-    elif compliant == 'NonCompliant':
-        print(f'  \033[31m[VIOLATION]\033[0m {name}')
-        if msg:
-            if len(msg) > 300:
-                msg = msg[:300] + '...'
-            print(f'       {msg}')
-    else:
-        print(f'  \033[33m[{compliant}]\033[0m {name}')
-        if msg:
-            if len(msg) > 300:
-                msg = msg[:300] + '...'
-            print(f'       {msg}')
-" 2>/dev/null || true
 
     POLICY_VIOLATION_TEMPLATES=$(echo "$BR_REPLICATED" | python3 -c "
 import sys, json
@@ -517,69 +321,57 @@ violations = [d.get('templateMeta',{}).get('name','?') for d in details if d.get
 print(','.join(violations))
 " 2>/dev/null || echo "")
   fi
-
-  # ---- backup-restore-auto-import ----
-  printf "\n${BOLD}backup-restore-auto-import policy:${RESET}\n"
-  AI_ROOT=$(run_oc get policy.policy.open-cluster-management.io backup-restore-auto-import -n "$NS" -o json 2>/dev/null || echo "")
-  if [[ -z "$AI_ROOT" ]]; then
-    AI_SEARCH_NS=$(run_oc get policy.policy.open-cluster-management.io -A --no-headers 2>/dev/null | awk '$2=="backup-restore-auto-import"{print $1;exit}' || echo "")
-    if [[ -n "$AI_SEARCH_NS" ]]; then
-      AI_ROOT=$(run_oc get policy.policy.open-cluster-management.io backup-restore-auto-import -n "$AI_SEARCH_NS" -o json 2>/dev/null || echo "")
-    fi
-  fi
-
-  if [[ -z "$AI_ROOT" ]]; then
-    info "Policy not found (only present when useManagedServiceAccount is enabled on BackupSchedule)."
-  else
-    AI_COMPLIANCE=$(echo "$AI_ROOT" | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',{}).get('compliant','Unknown'))" 2>/dev/null || echo "Unknown")
-
-    if [[ "$AI_COMPLIANCE" == "Compliant" ]]; then
-      info "Overall: Compliant"
-    else
-      err "Overall: ${AI_COMPLIANCE}"
-      AI_COMPLIANT=false
-    fi
-
-    AI_ORIG_NS=$(echo "$AI_ROOT" | python3 -c "import sys,json;print(json.load(sys.stdin)['metadata']['namespace'])" 2>/dev/null || echo "$NS")
-    AI_REPLICATED=$(run_oc get policy.policy.open-cluster-management.io "${AI_ORIG_NS}.backup-restore-auto-import" -n "$LOCAL_CLUSTER_NAME" -o json 2>/dev/null || echo "")
-    [[ -z "$AI_REPLICATED" ]] && AI_REPLICATED="$AI_ROOT"
-
-    echo "$AI_REPLICATED" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-details = data.get('status', {}).get('details', [])
-for d in details:
-    name = d.get('templateMeta', {}).get('name', 'unknown')
-    compliant = d.get('compliant', 'Unknown')
-    history = d.get('history', [])
-    msg = ''
-    if history:
-        msg = history[0].get('message', '')
-    if compliant == 'Compliant':
-        print(f'  \033[32m[OK]\033[0m {name}')
-    elif compliant == 'NonCompliant':
-        print(f'  \033[31m[VIOLATION]\033[0m {name}')
-        if msg:
-            if len(msg) > 300:
-                msg = msg[:300] + '...'
-            print(f'       {msg}')
-    else:
-        print(f'  \033[33m[{compliant}]\033[0m {name}')
-        if msg:
-            if len(msg) > 300:
-                msg = msg[:300] + '...'
-            print(f'       {msg}')
-" 2>/dev/null || true
-
-    AI_VIOLATION_TEMPLATES=$(echo "$AI_REPLICATED" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-details = data.get('status', {}).get('details', [])
-violations = [d.get('templateMeta',{}).get('name','?') for d in details if d.get('compliant') == 'NonCompliant']
-print(','.join(violations))
-" 2>/dev/null || echo "")
-  fi
 fi
+
+# Printed under SUMMARY as subsections (Details)
+print_summary_details_acm_backups_and_failover() {
+  printf "\n${BOLD}Details:${RESET}\n"
+
+  printf "\n${BOLD}  ACM Backups in Storage${RESET}\n"
+  printf "  Checking ${BOLD}active hub ownership${RESET}: each backup carries a hub cluster ID (who wrote it to storage).\n"
+  printf "  We compare that ID to this cluster to spot a passive hub still writing, collision, or wrong hub.\n"
+
+  if [[ "$BACKUP_COUNT" -gt 0 ]]; then
+    printf "  ${GREEN}[OK]${RESET} %s ACM resource backups found (acm-resources-schedule)\n" "$BACKUP_COUNT"
+    printf "  Latest backup in storage was written by hub: ${BOLD}%s${RESET}\n" "$(hub_label "$ACTIVE_HUB_ID")"
+
+    if [[ "$ACTIVE_HUB_ID" != "$CLUSTER_ID" ]]; then
+      local THIS_SHOULD_BE_ACTIVE=false
+      local WHY_EXPECT_ACTIVE=""
+      if [[ -n "$FAILOVER_HUB" && "$FAILOVER_HUB" == "$CLUSTER_ID" ]]; then
+        THIS_SHOULD_BE_ACTIVE=true
+        WHY_EXPECT_ACTIVE="this hub ran the last managed-clusters activation restore (failover), so it should own new backups"
+      fi
+      if [[ "$HAS_SCHEDULE" == true && "$SCHEDULE_PHASE" != "BackupCollision" && "$SCHEDULE_PHASE" != "Paused" ]]; then
+        THIS_SHOULD_BE_ACTIVE=true
+        if [[ -n "$WHY_EXPECT_ACTIVE" ]]; then
+          WHY_EXPECT_ACTIVE+="; "
+        fi
+        WHY_EXPECT_ACTIVE+="this hub has a BackupSchedule that is running (not paused, not in collision)"
+      fi
+      if [[ "$THIS_SHOULD_BE_ACTIVE" == true ]]; then
+        printf "  ${YELLOW}[WARN]${RESET} Active hub ownership mismatch — backups in storage do not match this cluster.\n"
+        printf "     ${YELLOW}Why we expect this hub to be the active writer:${RESET} %s\n" "$WHY_EXPECT_ACTIVE"
+        printf "     ${YELLOW}What we see in storage:${RESET} the newest ACM resource backup was written by hub %s, not this cluster (%s).\n" "$(hub_label "$ACTIVE_HUB_ID")" "$CLUSTER_ID"
+        printf "     ${YELLOW}What that usually means:${RESET} another hub is still writing the same backup store, or ownership did not switch after failover — review BackupCollision, passive sync, and which hub should be active.\n"
+      fi
+    fi
+  else
+    printf "  ${YELLOW}[WARN]${RESET} No acm-resources-schedule backups found in storage\n"
+  fi
+
+  printf "\n${BOLD}  Post-Failover Detection${RESET}\n"
+  if [[ "$FAILOVER_COUNT" -gt 0 ]]; then
+    printf "  Last failover (managed-clusters restore) by: ${BOLD}%s${RESET}\n" "$(hub_label "$FAILOVER_HUB")"
+    if [[ "$FAILOVER_HUB" == "$CLUSTER_ID" ]]; then
+      printf "  ${BOLD}>> This cluster activated managed clusters -- it should be running a BackupSchedule.${RESET}\n"
+    else
+      printf "  >> Hub %s activated managed clusters -- it should be the active hub; this cluster should be passive.\n" "$FAILOVER_HUB"
+    fi
+  else
+    printf "  ${GREEN}[OK]${RESET} No failover restores detected\n"
+  fi
+}
 
 # --- Summary ---
 header "SUMMARY"
@@ -688,15 +480,20 @@ fi
 
 printf "Active hub (by backups): ${BOLD}%s${RESET}\n" "$(hub_label "$ACTIVE_HUB_ID")"
 
+print_summary_details_acm_backups_and_failover
+
 # --- Diagnostic Analysis ---
-# Collect issues as: ISSUE_ID|SEVERITY|DESCRIPTION|FIX_TYPE
+# ISSUES[]: "ISSUE_ID|SEVERITY|FIX_TYPE" (no description — multiline-safe)
+# ISSUE_DESC[]: full description text (same index as ISSUES[])
 # FIX_TYPE: create_schedule, remove_schedule, remove_restore, remote_only, none
 ISSUES=()
+ISSUE_DESC=()
 ISSUE_NUM=0
 
 add_issue() {
   ISSUE_NUM=$((ISSUE_NUM + 1))
-  ISSUES+=("$ISSUE_NUM|$1|$2|$3")
+  ISSUES+=("$ISSUE_NUM|$1|$3")
+  ISSUE_DESC+=("$2")
 }
 
 # Failover happened on this cluster but no BackupSchedule is running
@@ -762,18 +559,41 @@ if [[ "$ROLE" != "ACTIVE" && "$ROLE" != "ACTIVE_NO_VALIDATION" && "$ROLE" != "FA
   fi
 fi
 
-# backup-restore-enabled policy violations
-if [[ "$POLICY_FOUND" == true && "$POLICY_COMPLIANT" == false && -n "$POLICY_VIOLATION_TEMPLATES" ]]; then
-  add_issue "ERROR" \
-    "backup-restore-enabled policy is NonCompliant. Violating templates: ${POLICY_VIOLATION_TEMPLATES}. See section 9 above for details." \
-    "none"
-fi
-
-# backup-restore-auto-import policy violations
-if [[ "$AI_COMPLIANT" == false && -n "$AI_VIOLATION_TEMPLATES" ]]; then
-  add_issue "WARN" \
-    "backup-restore-auto-import policy is NonCompliant. Violating templates: ${AI_VIOLATION_TEMPLATES}. See section 9 above for details." \
-    "none"
+# backup-restore-enabled policy violations (full template lines in ISSUES)
+if [[ "$POLICY_FOUND" == true && "$POLICY_COMPLIANT" == false ]]; then
+  POLICY_ISSUE_BODY=$(echo "$BR_REPLICATED" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+details = data.get('status', {}).get('details', [])
+violations = []
+for d in details:
+    if d.get('compliant') != 'NonCompliant':
+        continue
+    name = d.get('templateMeta', {}).get('name', 'unknown')
+    msg = ''
+    if d.get('history'):
+        msg = d['history'][0].get('message', '')
+    msg = msg.replace('|', ' ')
+    violations.append((name, msg))
+if not violations:
+    sys.exit(0)
+lines = []
+for i, (name, msg) in enumerate(violations):
+    if i == 0:
+        lines.append('backup-restore-enabled policy is NonCompliant.   [VIOLATION] ' + name)
+    else:
+        lines.append('  [VIOLATION] ' + name)
+    if msg:
+        lines.append('       ' + msg)
+print('\\n'.join(lines))
+" 2>/dev/null || echo "")
+  if [[ -n "$POLICY_ISSUE_BODY" ]]; then
+    add_issue "ERROR" "$POLICY_ISSUE_BODY" "none"
+  elif [[ -n "$POLICY_VIOLATION_TEMPLATES" ]]; then
+    add_issue "ERROR" \
+      "backup-restore-enabled policy is NonCompliant. Violating templates: ${POLICY_VIOLATION_TEMPLATES}." \
+      "none"
+  fi
 fi
 
 if [[ ${#ISSUES[@]} -eq 0 ]]; then
@@ -785,8 +605,11 @@ fi
 printf "\n"
 header "ISSUES DETECTED"
 
+_issue_idx=0
 for issue in "${ISSUES[@]}"; do
-  IFS='|' read -r num severity desc fix_type <<< "$issue"
+  IFS='|' read -r num severity fix_type <<< "$issue"
+  desc="${ISSUE_DESC[$_issue_idx]}"
+  _issue_idx=$((_issue_idx + 1))
   if [[ "$severity" == "ERROR" ]]; then
     printf "${RED}[%d] %s${RESET} %s\n" "$num" "$severity" "$desc"
   else
@@ -797,7 +620,7 @@ done
 # --- Check if any issue is fixable from this cluster ---
 HAS_LOCAL_FIX=false
 for issue in "${ISSUES[@]}"; do
-  IFS='|' read -r num severity desc fix_type <<< "$issue"
+  IFS='|' read -r num severity fix_type <<< "$issue"
   if [[ "$fix_type" != "remote_only" && "$fix_type" != "none" ]]; then
     HAS_LOCAL_FIX=true
     break
@@ -819,10 +642,149 @@ if [[ ! "$FIX_ANSWER" =~ ^[Yy] ]]; then
   exit 0
 fi
 
+# Velero must be up or BackupSchedule stays in phase New (operator cannot reconcile Velero schedules).
+verify_velero_backup_ready() {
+  local ready desired running lbl
+  if run_oc get deploy velero -n "$NS" &>/dev/null; then
+    ready=$(run_oc get deploy velero -n "$NS" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+    desired=$(run_oc get deploy velero -n "$NS" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
+    ready="${ready:-0}"
+    desired="${desired:-0}"
+    if [[ "$ready" =~ ^[0-9]+$ && "$desired" =~ ^[0-9]+$ && "$desired" -gt 0 && "$ready" -ge 1 ]]; then
+      printf "  ${GREEN}[OK]${RESET} Velero deployment ready (%s/%s) in %s.\n" "$ready" "$desired" "$NS"
+      return 0
+    fi
+    printf "  ${RED}[ERROR]${RESET} Velero deployment in %s is not ready (readyReplicas=%s, replicas=%s).\n" "$NS" "$ready" "$desired"
+    printf "  Fix Velero first; otherwise BackupSchedule will stay in phase New.\n"
+    return 1
+  fi
+  lbl=$(run_oc get pods -n "$NS" -l 'app.kubernetes.io/name=velero' --no-headers 2>/dev/null | awk '$3=="Running"{c++} END{print c+0}')
+  if [[ "${lbl:-0}" -gt 0 ]]; then
+    printf "  ${GREEN}[OK]${RESET} Velero pod(s) Running (%s) in %s (app.kubernetes.io/name=velero).\n" "$lbl" "$NS"
+    return 0
+  fi
+  running=$(run_oc get pods -n "$NS" --no-headers 2>/dev/null | awk '$3=="Running" && $1 ~ /^velero/ {c++} END{print c+0}')
+  if [[ "${running:-0}" -gt 0 ]]; then
+    printf "  ${GREEN}[OK]${RESET} Running velero-* pod(s) in %s: %s.\n" "$NS" "$running"
+    return 0
+  fi
+  printf "  ${RED}[ERROR]${RESET} No ready Velero deployment or Running Velero pod in %s.\n" "$NS"
+  printf "  Start OADP/Velero in this namespace first; BackupSchedule cannot reach Enabled without it.\n"
+  return 1
+}
+
+# ACM cluster-backup reconciler (not OADP/Velero). Same workload as policy acm-backup-pod-running:
+# the cluster-backup-chart-clusterbackup pod in open-cluster-management-backup.
+# Do not use generic control-plane=controller-manager — that matches openshift-adp-controller-manager.
+verify_acm_cluster_backup_operator_ready() {
+  local ready desired dname running
+  local prefix="cluster-backup-chart-clusterbackup"
+  while read -r dname; do
+    [[ -z "$dname" ]] && continue
+    [[ "$dname" =~ ^${prefix} ]] || continue
+    ready=$(run_oc get deploy "$dname" -n "$NS" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+    desired=$(run_oc get deploy "$dname" -n "$NS" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
+    ready="${ready:-0}"
+    desired="${desired:-0}"
+    if [[ "$desired" =~ ^[0-9]+$ && "$desired" -gt 0 && "$ready" =~ ^[0-9]+$ && "$ready" -ge 1 ]]; then
+      printf "  ${GREEN}[OK]${RESET} cluster-backup-chart-clusterbackup Deployment '%s' ready (%s/%s) (policy acm-backup-pod-running).\n" "$dname" "$ready" "$desired"
+      printf "  (This reconciles BackupSchedule; if it is down, %s will stay empty.)\n" "status.phase"
+      return 0
+    fi
+    printf "  ${RED}[ERROR]${RESET} cluster-backup-chart-clusterbackup Deployment '%s' not ready (%s/%s) in %s.\n" "$dname" "$ready" "$desired" "$NS"
+    printf "  Policy acm-backup-pod-running requires this pod Running; otherwise BackupSchedule will not reconcile.\n"
+    return 1
+  done < <(run_oc get deploy -n "$NS" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null)
+
+  # Deployment missing or scaled to zero: check pod prefix (matches policy wording)
+  running=$(run_oc get pods -n "$NS" --no-headers 2>/dev/null | awk -v p="$prefix" 'index($1,p)==1 && $3=="Running"{c++} END{print c+0}')
+  if [[ "${running:-0}" -gt 0 ]]; then
+    printf "  ${GREEN}[OK]${RESET} Found %s Running pod(s) named %s-* (policy acm-backup-pod-running).\n" "$running" "$prefix"
+    return 0
+  fi
+
+  printf "  ${RED}[ERROR]${RESET} No Deployment or Running pod with prefix '%s' in %s.\n" "$prefix" "$NS"
+  printf "  This is what policy ${CYAN}acm-backup-pod-running${RESET} checks (not openshift-adp-controller-manager).\n"
+  printf "  Enable MCH ${CYAN}cluster-backup${RESET} and ensure the cluster-backup chart pod is Running.\n"
+  return 1
+}
+
+# After applying a BackupSchedule, reconcile until phase is Enabled (or a terminal error).
+# See cluster.open-cluster-management.io/v1beta1 BackupSchedule status.phase.
+verify_backup_schedule_running() {
+  local name="${1:-schedule-acm}"
+  local max_attempts="${2:-3}"
+  local phase="" msg="" i vs
+  printf "  Checking Velero and cluster-backup-chart-clusterbackup (acm-backup-pod-running) before BackupSchedule phase...\n"
+  if ! verify_velero_backup_ready; then
+    return 1
+  fi
+  if ! verify_acm_cluster_backup_operator_ready; then
+    return 1
+  fi
+  for ((i = 1; i <= max_attempts; i++)); do
+    phase=$(run_oc get backupschedules.cluster.open-cluster-management.io "$name" -n "$NS" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+    msg=$(run_oc get backupschedules.cluster.open-cluster-management.io "$name" -n "$NS" -o jsonpath='{.status.lastMessage}' 2>/dev/null || echo "")
+    case "$phase" in
+      Enabled)
+        printf "  ${GREEN}[OK]${RESET} BackupSchedule '%s' is running (phase=Enabled).\n" "$name"
+        if [[ -n "$msg" ]]; then
+          printf "  lastMessage: %s\n" "$msg"
+        fi
+        vs=$(run_oc get schedules.velero.io -n "$NS" --no-headers 2>/dev/null | wc -l | tr -d '[:space:]')
+        if [[ "${vs:-0}" =~ ^[0-9]+$ && "${vs:-0}" -gt 0 ]]; then
+          printf "  Velero Schedule objects in %s: %s\n" "$NS" "$vs"
+        fi
+        return 0
+        ;;
+      Paused)
+        printf "  ${YELLOW}[WARN]${RESET} BackupSchedule '%s' is Paused -- scheduled backups are not running.\n" "$name"
+        if [[ -n "$msg" ]]; then
+          printf "  lastMessage: %s\n" "$msg"
+        fi
+        return 1
+        ;;
+      BackupCollision)
+        printf "  ${RED}[ERROR]${RESET} BackupSchedule '%s' is in BackupCollision (another hub may be active).\n" "$name"
+        if [[ -n "$msg" ]]; then
+          printf "  lastMessage: %s\n" "$msg"
+        fi
+        return 1
+        ;;
+      FailedValidation|Failed)
+        printf "  ${RED}[ERROR]${RESET} BackupSchedule '%s' phase=%s\n" "$name" "$phase"
+        if [[ -n "$msg" ]]; then
+          printf "  lastMessage: %s\n" "$msg"
+        fi
+        return 1
+        ;;
+      ""|New|Unknown)
+        printf "  ... waiting for reconciliation (phase=%s) [%s/%s]\n" "${phase:-empty}" "$i" "$max_attempts"
+        sleep 2
+        ;;
+      *)
+        printf "  ... waiting for Enabled (phase=%s) [%s/%s]\n" "$phase" "$i" "$max_attempts"
+        sleep 2
+        ;;
+    esac
+  done
+  printf "  ${YELLOW}[WARN]${RESET} Timed out waiting for BackupSchedule '%s' to reach phase=Enabled (last phase=%s).\n" "$name" "${phase:-empty}"
+  if [[ -n "$msg" ]]; then
+    printf "  lastMessage: %s\n" "$msg"
+  fi
+  if [[ -z "$phase" ]]; then
+    printf "  ${YELLOW}[HINT]${RESET} Empty phase: ensure ${CYAN}cluster-backup-chart-clusterbackup${RESET} pod is Running (policy acm-backup-pod-running), not only Velero/OADP. Check:\n"
+    printf "    ${CYAN}oc get deploy,po -n %s | grep -E 'cluster-backup-chart-clusterbackup|velero'${RESET}\n" "$NS"
+    printf "    ${CYAN}oc describe backupschedule %s -n %s${RESET}\n" "$name" "$NS"
+  fi
+  return 1
+}
+
 run_with_confirm() {
   local step_num="$1"
   local description="$2"
   local command="$3"
+  local post_command="${4:-}"
   printf "\n${BOLD}${CYAN}Step %s: %s${RESET}\n" "$step_num" "$description"
   printf "  Command: ${BOLD}%s${RESET}\n" "$command"
   printf "  ${BOLD}Run this? [y/N]:${RESET} "
@@ -831,6 +793,12 @@ run_with_confirm() {
     printf "  Running...\n"
     if eval "$command"; then
       info "Done."
+      if [[ -n "$post_command" ]]; then
+        printf "  Verifying BackupSchedule...\n"
+        if ! eval "$post_command"; then
+          warn "BackupSchedule verification did not report a healthy running state."
+        fi
+      fi
     else
       err "Command failed (exit code $?)."
     fi
@@ -855,7 +823,7 @@ NEEDS_PASSIVE=false
 WARN_REMOTE_HUB=""
 
 for issue in "${ISSUES[@]}"; do
-  IFS='|' read -r num severity desc fix_type <<< "$issue"
+  IFS='|' read -r num severity fix_type <<< "$issue"
   case "$fix_type" in
     create_schedule)
       NEEDS_SCHEDULE=true
@@ -1033,7 +1001,8 @@ metadata:
 spec:
   veleroSchedule: ${CRON}
   veleroTtl: ${TTL}
-YAML"
+YAML" \
+    "verify_backup_schedule_running schedule-acm"
 fi
 
 # Create passive Restore if this hub should be passive but has no syncing Restore
