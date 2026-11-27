@@ -25,10 +25,6 @@ chmod +x manifests/*.sh
 oc apply -f manifests/global-hub-postgres-restore-from-s3.yaml
 ```
 
-## Related sample
-
-Interactive flow: [../gh-hub-dr-journey/](../gh-hub-dr-journey/)
-
 ## Notes
 
 - Manifests use placeholders (`YOUR_S3_BUCKET`, `~/.aws/credentials`) — set bucket, region, and paths before use.
