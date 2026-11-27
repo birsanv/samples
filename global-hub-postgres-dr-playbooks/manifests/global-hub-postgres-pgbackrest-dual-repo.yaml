@@ -1,0 +1,39 @@
+# Patch: pgBackRest backups to S3 only (repo2) with cron schedules on the active hub.
+# Replaces GH default repo1 PVC backups — merge overwrites spec.backups.pgbackrest.repos.
+#
+# Schedules (UTC, standard cron):
+#   full         — Sunday 02:00
+#   incremental  — every hour at :00
+#   differential — Mon–Sat 03:00 (not Sunday)
+#
+# Playbook: global-hub-postgres-pgbackrest-s3.md §3
+# Prereq: manifests/global-hub-postgres-pgbackrest-s3-secret.sh
+#
+#   oc patch postgrescluster postgres -n multicluster-global-hub \
+#     --type=merge --patch-file manifests/global-hub-postgres-pgbackrest-dual-repo.yaml
+apiVersion: postgres-operator.crunchydata.com/v1beta1
+kind: PostgresCluster
+metadata:
+  name: postgres
+  namespace: multicluster-global-hub
+spec:
+  backups:
+    pgbackrest:
+      configuration:
+        - secret:
+            name: multicluster-global-hub-pgbackrest-s3
+      global:
+        repo2-path: /pgbackrest/multicluster-global-hub/postgres/repo2
+        # Avoid WARN: repo2-retention-full not set (default retention-full-type is count).
+        repo2-retention-full: "4"
+        repo2-retention-full-type: count
+      repos:
+        - name: repo2
+          schedules:
+            full: "0 2 * * 0"
+            incremental: "0 * * * *"
+            differential: "0 3 * * 1-6"
+          s3:
+            bucket: YOUR_S3_BUCKET
+            endpoint: s3.us-east-2.amazonaws.com
+            region: us-east-2

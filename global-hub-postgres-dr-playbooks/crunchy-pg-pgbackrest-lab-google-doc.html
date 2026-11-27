@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Crunchy Postgres + pgBackRest lab playbook</title>
+  <style>
+    body { font-family: Arial, sans-serif; font-size: 11pt; line-height: 1.45; max-width: 8.5in; margin: 1in; color: #000; }
+    h1 { font-size: 16pt; margin-top: 0; }
+    h2 { font-size: 13pt; margin-top: 20pt; border-bottom: 1px solid #ccc; padding-bottom: 4pt; }
+    h3 { font-size: 11.5pt; margin-top: 14pt; }
+    p { margin: 8pt 0; }
+    table { border-collapse: collapse; width: 100%; margin: 10pt 0 14pt 0; }
+    th, td { border: 1px solid #333; padding: 6pt 8pt; text-align: left; vertical-align: top; }
+    th { background: #f0f0f0; font-weight: bold; }
+    ul, ol { margin: 6pt 0; padding-left: 20pt; }
+    li { margin: 5pt 0; }
+    .meta { color: #444; font-size: 10pt; margin-bottom: 16pt; }
+    a { color: #1155cc; }
+    pre { font-family: Consolas, "Courier New", monospace; font-size: 9pt; background: #f5f5f5; border: 1px solid #ccc; padding: 10pt; overflow-x: auto; white-space: pre-wrap; }
+    code { font-family: Consolas, "Courier New", monospace; font-size: 10pt; }
+    hr { border: none; border-top: 1px solid #ccc; margin: 16pt 0; }
+  </style>
+</head>
+<body>
+
+<h1>Crunchy Postgres + pgBackRest lab playbook</h1>
+
+<p class="meta">
+  <strong>Source:</strong> <code>cluster-backup-operator/crunchy-pg-pgbackrest-lab.md</code><br>
+  <strong>How to use:</strong> Open this file in a browser → Select All → Copy → Paste into Google Docs.<br>
+  <strong>Related:</strong> Global Hub S3 playbook — <code>global-hub-postgres-pgbackrest-s3.md</code> / <code>global-hub-postgres-pgbackrest-s3-google-doc.html</code>.
+</p>
+
+<p>Hands-on lab on an OpenShift hub with <strong>Crunchy Postgres for Kubernetes (PGO)</strong> already installed. Mirrors the Global Hub pattern (<strong>repo1 on PVC</strong>) and adds <strong>manual backup</strong> and <strong>DR restore</strong> into a second <code>PostgresCluster</code>.</p>
+
+<h2>Prerequisites</h2>
+<ul>
+  <li>PGO CSV <code>Succeeded</code> (e.g. <code>postgresoperator.v5.8.x</code> in <code>openshift-operators</code>)</li>
+  <li><code>kubectl</code> / <code>oc</code> logged into the hub</li>
+  <li>Default storage class (this playbook uses <code>gp3-csi</code>; change if yours differs)</li>
+</ul>
+
+<h2>Manifests in this repo</h2>
+<ul>
+  <li><code>manifests/postgres-lab-primary.yaml</code></li>
+  <li><code>manifests/postgres-lab-dr.yaml</code></li>
+</ul>
+
+<hr>
+
+<h2>1. Deploy primary cluster</h2>
+<pre>kubectl apply -f manifests/postgres-lab-primary.yaml
+kubectl -n postgres-lab get postgrescluster pg-playground -w
+kubectl -n postgres-lab get pods</pre>
+<p>Wait until <code>PostgresCluster</code> status is <strong>Ready</strong> and the primary pod is <code>Running</code>.</p>
+
+<hr>
+
+<h2>2. Connect and load sample data</h2>
+<p>Credentials (user <code>app</code>, database <code>playground</code>):</p>
+<pre>export PGUSER=$(kubectl -n postgres-lab get secret pg-playground-pguser-app -o jsonpath='{.data.user}' | base64 -d)
+export PGPASSWORD=$(kubectl -n postgres-lab get secret pg-playground-pguser-app -o jsonpath='{.data.password}' | base64 -d)
+kubectl -n postgres-lab port-forward svc/pg-playground-primary 5432:5432</pre>
+<p>In another terminal (port-forward):</p>
+<pre>export PGUSER=app
+export PGPASSWORD='&lt;paste from above&gt;'
+psql -h localhost -U "$PGUSER" -d playground -c "
+  CREATE TABLE IF NOT EXISTS dr_demo (id serial PRIMARY KEY, note text, ts timestamptz default now());
+  INSERT INTO dr_demo (note) VALUES ('before-backup');
+  SELECT * FROM dr_demo;
+"</pre>
+<p><strong>Alternative (no port-forward):</strong> run <code>psql</code> inside the primary pod as the <code>postgres</code> OS user (local socket):</p>
+<pre>PRIMARY=$(kubectl -n postgres-lab get pods -l postgres-operator.crunchydata.com/cluster=pg-playground,postgres-operator.crunchydata.com/data=postgres -o name | head -1)
+kubectl -n postgres-lab exec "$PRIMARY" -c database -- psql -U postgres -d playground -c "SELECT 1"</pre>
+
+<hr>
+
+<h2>3. Manual pgBackRest full backup</h2>
+<p>PGO runs a one-off backup when you annotate the cluster (<a href="https://access.crunchydata.com/documentation/postgres-operator/v5/tutorial/backup-management/">Crunchy backup management</a>):</p>
+<pre>kubectl annotate -n postgres-lab postgrescluster pg-playground \
+  postgres-operator.crunchydata.com/pgbackrest-backup="$(date -Iseconds)" --overwrite
+
+kubectl -n postgres-lab get jobs -w
+kubectl -n postgres-lab get pvc | grep -E 'pg-playground|repo'</pre>
+<p>After the backup job <strong>Completes</strong>, simulate data you want to “lose” on restore:</p>
+<pre>psql -h localhost -U "$PGUSER" -d playground -c \
+  "INSERT INTO dr_demo (note) VALUES ('after-backup-should-disappear');"</pre>
+
+<hr>
+
+<h2>4. DR drill: restore into a new cluster (same hub)</h2>
+<pre>kubectl apply -f manifests/postgres-lab-dr.yaml
+kubectl -n postgres-lab get postgrescluster pg-playground-dr -w</pre>
+<p>Port-forward the DR cluster and verify rows:</p>
+<pre>kubectl -n postgres-lab port-forward svc/pg-playground-dr-primary 5433:5432
+psql -h localhost -p 5433 -U "$PGUSER" -d playground -c "SELECT * FROM dr_demo ORDER BY id;"</pre>
+<p>Or from the DR pod:</p>
+<pre>DR=$(kubectl -n postgres-lab get pods -l postgres-operator.crunchydata.com/cluster=pg-playground-dr,postgres-operator.crunchydata.com/data=postgres -o name | head -1)
+kubectl -n postgres-lab exec "$DR" -c database -- psql -U postgres -d playground -c "SELECT * FROM dr_demo ORDER BY id;"</pre>
+<p><strong>Expected:</strong> <code>before-backup</code> present; <code>after-backup-should-disappear</code> absent (full restore from repo1).</p>
+
+<h3>Optional: point-in-time restore (PITR)</h3>
+<p>After WAL is archived to repo1, you can add restore options on the DR cluster <strong>before first start</strong> (edit <code>postgres-lab-dr.yaml</code>):</p>
+<pre>dataSource:
+  postgresCluster:
+    clusterName: pg-playground
+    clusterNamespace: postgres-lab
+    repoName: repo1
+    options:
+      - --type=time
+      - --target=2026-10-26 20:00:00+00</pre>
+<p>Delete <code>pg-playground-dr</code> and re-apply if you need to change <code>dataSource</code>.</p>
+
+<hr>
+
+<h2>5. Inspect pgBackRest (optional)</h2>
+<pre>PRIMARY=$(kubectl -n postgres-lab get pods -l postgres-operator.crunchydata.com/cluster=pg-playground,postgres-operator.crunchydata.com/role=master -o name | head -1)
+kubectl -n postgres-lab exec -it "$PRIMARY" -c database -- pgbackrest info</pre>
+
+<hr>
+
+<h2>6. Cleanup</h2>
+<pre>kubectl delete -f manifests/postgres-lab-dr.yaml --ignore-not-found
+kubectl delete -f manifests/postgres-lab-primary.yaml --ignore-not-found
+# Namespace removes remaining PVCs once PostgresClusters are gone
+kubectl delete namespace postgres-lab --ignore-not-found</pre>
+
+<hr>
+
+<h2>Relation to Global Hub and ACM DR</h2>
+<table>
+  <thead>
+    <tr>
+      <th>This lab</th>
+      <th>Global Hub (<code>NewPostgresCluster</code>)</th>
+      <th>Passive-hub DR</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>repo1</code> on PVC</td>
+      <td>Same declarative spec</td>
+      <td>PVC on active hub only</td>
+    </tr>
+    <tr>
+      <td>PGO runs backup/restore</td>
+      <td>No pgBackRest CLI in GH Go code</td>
+      <td>Needs <strong>off-cluster repo</strong> (e.g. S3) + restore on hub B</td>
+    </tr>
+    <tr>
+      <td><code>dataSource.postgresCluster</code></td>
+      <td>Manual / drill</td>
+      <td>Target pattern for “new cluster from backup”</td>
+    </tr>
+  </tbody>
+</table>
+<p>See also: <code>docs/GLOBAL-HUB-PGBACKREST-AND-BACKUP-SUMMARY.md</code>, <code>docs/GLOBAL-HUB-POSTGRES-DR-SUMMARY-google-doc.html</code>.</p>
+
+<hr>
+
+<h2>7. S3 repo aligned with ACM DPA (same bucket as Velero BSL)</h2>
+<p><code>postgres-lab-dr.yaml</code> archives pgBackRest <strong>repo1</strong> to the same AWS bucket/region as OADP (example: <code>YOUR_S3_BUCKET</code>, <code>us-east-2</code>), using a <strong>dedicated</strong> key prefix (<code>repo1-path</code>), not Velero’s <code>hub-a/</code> prefix.</p>
+<p>Before applying the DR manifest:</p>
+<pre>manifests/postgres-lab-s3-secret.sh   # keys from ~/.aws/credentials
+kubectl apply -f manifests/postgres-lab-dr.yaml</pre>
+<p>Restore still uses <code>dataSource.postgresCluster</code> (primary PVC <code>repo1</code>) in this lab. For passive-hub / cross-cluster DR, push backups from the primary to the same S3 repo, then bootstrap with <code>spec.dataSource.pgbackrest</code> per <a href="https://access.crunchydata.com/documentation/postgres-operator/v5/tutorial/backups/">Crunchy S3 DR</a>.</p>
+<p><strong>Global Hub <code>PostgresCluster/postgres</code> (keep PVC repo1 + add S3 repo2):</strong> <code>global-hub-postgres-pgbackrest-s3.md</code>.</p>
+
+<hr>
+
+<h2>Troubleshooting</h2>
+<table>
+  <thead>
+    <tr>
+      <th>Symptom</th>
+      <th>Check</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>PostgresCluster not Ready</td>
+      <td><code>kubectl -n postgres-lab describe postgrescluster &lt;name&gt;</code>; pod logs</td>
+    </tr>
+    <tr>
+      <td>Backup job fails</td>
+      <td><code>kubectl -n postgres-lab logs job/&lt;pgbackrest-job&gt;</code></td>
+    </tr>
+    <tr>
+      <td>DR cluster empty / wrong data</td>
+      <td>Confirm backup job completed; <code>pgbackrest info</code> on primary; <code>repoName</code> matches</td>
+    </tr>
+    <tr>
+      <td>PVC pending</td>
+      <td><code>kubectl get sc</code>; set <code>storageClassName</code> in manifests</td>
+    </tr>
+  </tbody>
+</table>
+
+</body>
+</html>
