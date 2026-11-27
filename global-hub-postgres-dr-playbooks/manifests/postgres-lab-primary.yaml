@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: postgres-lab
+---
+apiVersion: postgres-operator.crunchydata.com/v1beta1
+kind: PostgresCluster
+metadata:
+  name: pg-playground
+  namespace: postgres-lab
+spec:
+  postgresVersion: 16
+  users:
+    - name: app
+      databases:
+        - playground
+      options: "SUPERUSER"
+  instances:
+    - name: instance1
+      replicas: 1
+      dataVolumeClaimSpec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: gp3-csi
+        resources:
+          requests:
+            storage: 10Gi
+  backups:
+    pgbackrest:
+      manual:
+        repoName: repo1
+        options:
+          - --type=full
+      repos:
+        - name: repo1
+          schedules:
+            full: "0 2 * * 0"
+            incremental: "0 3 * * *"
+          volume:
+            volumeClaimSpec:
+              accessModes:
+                - ReadWriteOnce
+              storageClassName: gp3-csi
+              resources:
+                requests:
+                  storage: 10Gi

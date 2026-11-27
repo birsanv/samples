@@ -1,0 +1,41 @@
+# DR cluster: restore source stays primary repo1 (lab); ongoing pgBackRest archives use the
+# same S3 bucket/region/credentials as DPA YOUR_DPA (Velero BSL), with a dedicated prefix.
+apiVersion: postgres-operator.crunchydata.com/v1beta1
+kind: PostgresCluster
+metadata:
+  name: pg-playground-dr
+  namespace: postgres-lab
+spec:
+  postgresVersion: 16
+  dataSource:
+    postgresCluster:
+      clusterName: pg-playground
+      clusterNamespace: postgres-lab
+      repoName: repo1
+  users:
+    - name: app
+      databases:
+        - playground
+  instances:
+    - name: instance1
+      replicas: 1
+      dataVolumeClaimSpec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: gp3-csi
+        resources:
+          requests:
+            storage: 10Gi
+  backups:
+    pgbackrest:
+      configuration:
+        - secret:
+            name: postgres-lab-pgbackrest-s3
+      global:
+        repo1-path: /pgbackrest/postgres-lab/pg-playground-dr/repo1
+      repos:
+        - name: repo1
+          s3:
+            bucket: YOUR_S3_BUCKET
+            endpoint: s3.us-east-2.amazonaws.com
+            region: us-east-2

@@ -1,0 +1,27 @@
+# OLM install for Multicluster Global Hub (Red Hat catalog).
+# Apply: oc apply -f global-hub-operator-install.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: multicluster-global-hub
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: multicluster-global-hub
+  namespace: multicluster-global-hub
+spec:
+  targetNamespaces:
+    - multicluster-global-hub
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: multicluster-global-hub-operator
+  namespace: multicluster-global-hub
+spec:
+  channel: release-1.8
+  installPlanApproval: Automatic
+  name: multicluster-global-hub-operator-rh
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace

@@ -1,0 +1,17 @@
+# Apply after the Global Hub operator CSV is Succeeded on an ACTIVE hub install.
+# Passive hub: do NOT apply here — restore MulticlusterGlobalHub from ACM Velero after §7.2 Postgres S3 restore.
+#   oc get csv -n multicluster-global-hub | grep global-hub
+apiVersion: operator.open-cluster-management.io/v1alpha4
+kind: MulticlusterGlobalHub
+metadata:
+  name: multiclusterglobalhub
+  namespace: multicluster-global-hub
+  annotations:
+    mgh-install-crunchy-operator: "true"
+spec:
+  availabilityConfig: Basic
+  enableMetrics: true
+  dataLayer:
+    postgres:
+      retention: 3m
+      storageSize: 25Gi
